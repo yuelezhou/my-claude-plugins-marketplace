@@ -2,6 +2,9 @@
   "$schema": "https://code.claude.com/schemas/marketplace",
   "name": "my-claude-market",
   "description": "个人常用的 Claude Code 插件市场",
+  "owner": {
+    "name": "yuelezhou"
+  },
   "plugins": [
     {
       "name": "hello-greeting",
