@@ -2,25 +2,8 @@
   "name": "my-utils",
   "version": "1.0.0",
   "description": "个人常用工具集合 - 包含日常工作流中常用的技能和代理",
-  "author": "yuelezhou",
-  "license": "MIT",
-  "skills": [
-    {
-      "name": "quick-deploy",
-      "description": "快速部署工具 - 自动化构建和部署流程"
-    },
-    {
-      "name": "code-clean",
-      "description": "代码清理 - 移除未使用的导入、格式化代码"
-    }
-  ],
-  "agents": [
-    {
-      "name": "debug-helper",
-      "description": "调试助手 - 帮助分析和修复 bug"
-    }
-  ],
-  "hooks": {
-    "SessionStart": "welcome-message"
-  }
+  "author": {
+    "name": "yuelezhou"
+  },
+  "license": "MIT"
 }

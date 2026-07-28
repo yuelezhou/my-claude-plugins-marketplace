@@ -2,18 +2,8 @@
   "name": "hello-greeting",
   "version": "1.0.0",
   "description": "简单的问候插件 - 支持多种语言的问候语",
-  "author": "yuelezhou",
-  "license": "MIT",
-  "skills": [
-    {
-      "name": "greeting",
-      "description": "问候技能 - 用多种语言向用户打招呼"
-    }
-  ],
-  "commands": [
-    {
-      "name": "greeting",
-      "description": "显示多种语言的问候语"
-    }
-  ]
+  "author": {
+    "name": "yuelezhou"
+  },
+  "license": "MIT"
 }

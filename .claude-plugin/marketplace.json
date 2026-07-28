@@ -9,25 +9,12 @@
     {
       "name": "hello-greeting",
       "description": "简单的问候插件 - 支持多种语言的问候语",
-      "path": "plugins/hello-greeting"
+      "source": "./plugins/hello-greeting"
     },
     {
       "name": "my-utils",
       "description": "个人常用工具集合",
-      "path": "plugins/my-utils"
-    },
-    {
-      "name": "obsidian-skills",
-      "description": "Create and edit Obsidian vault files including Markdown, Bases, and Canvas. Use when working with .md, .base, or .canvas files in an Obsidian vault.",
-      "author": {
-        "name": "obsidian"
-      },
-      "category": "obsidian",
-      "source": {
-        "source": "github",
-        "repo": "kepano/obsidian-skills"
-      },
-      "homepage": "https://github.com/kepano/obsidian-skills"
+      "source": "./plugins/my-utils"
     },
     {
       "name": "obsidian-skills",
