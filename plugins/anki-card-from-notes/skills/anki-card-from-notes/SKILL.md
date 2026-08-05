@@ -64,6 +64,12 @@ displayNames:
 6. **整份输出只给一个 markdown 代码块**，代码块外不做解释
    - 原因：方便用户直接复制到 .md 文件
 
+7. **交付前自检**：产出写完后、交付前，跑一遍校验脚本 `scripts/check_anki_cards.py <文件>`（与 references 同级的 scripts 目录）
+   - 无 error → 交付
+   - 有 error → 按报告的行号和说明修正，改完重跑，直到干净
+   - warning → 逐个看一眼，能修就修（如 deck/tags 缺失、手写 id）
+   - 没有 python 环境 → 按 Output contract 的「硬性约束」清单人工逐条核对
+
 ## Output contract
 
 每份输出是一个完整的 .md 文件，路径由用户决定（常见位置：
@@ -116,6 +122,7 @@ note_type: basic       # 或 cloze
 
 ## Failure handling
 
+- **校验脚本报 error** → 按报告的行号/说明修正，重跑脚本直到通过再交付
 - **同步报错** → 报错信息回贴，按"硬性约束"清单自查修正
 - **挖空语法错**（漏 `::`、编号错乱） → 重新数 c1/c2/c3 顺序
 - **frontmatter 漏 `anki: true`** → 直接补上

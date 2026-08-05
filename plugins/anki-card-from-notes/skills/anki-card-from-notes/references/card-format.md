@@ -168,3 +168,4 @@ basic
 - 同步工具：`md2anki sync`（CLI）或 Obsidian Anki 插件
 - ID 回写：首次同步成功后，工具会把 Anki 返回的卡片 ID 自动写入 `#### 元数据 / ##### id`，再次同步时不会重复创建
 - 格式契约的权威来源：仓库根目录的 `SPEC.md`（若该 skill 用于某具体仓库）
+- 机器校验：交付前可运行 skill 附带的 `scripts/check_anki_cards.py <文件>`，覆盖以上全部硬性约束，报错带行号（`error` 必改，`warning` 视情况）
