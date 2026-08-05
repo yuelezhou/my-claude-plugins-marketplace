@@ -51,7 +51,7 @@ YAML_ANKI_RE = re.compile(r"^\s*anki\s*:\s*(true|false)\b", re.IGNORECASE)
 DECK_RE = re.compile(r"^\s*deck\s*:\s*(.+?)\s*$")
 TAGS_RE = re.compile(r"^\s*tags\s*:\s*(.+?)\s*$")
 NOTE_TYPE_RE = re.compile(r"^\s*note_type\s*:\s*(.+?)\s*$")
-TAGS_ARR_RE = re.compile(r"^\[.*\]$")
+TAGS_ARR_RE = re.compile(r"^\[[\w./-]+(\s*,\s*[\w./-]+)*\]$")
 TAGS_STR_RE = re.compile(r"^[\w./-]+(\s*,\s*[\w./-]+)*$")
 
 
