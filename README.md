@@ -8,20 +8,29 @@
 my_claude_code_market/
 ├── marketplace.json           # 市场配置文件
 ├── plugins/                   # 存放各个插件
-│   └── my-utils/
+│   ├── my-utils/
+│   │   ├── .claude-plugin/
+│   │   │   └── plugin.json    # 插件元数据
+│   │   ├── skills/            # Agent Skills
+│   │   │   ├── quick-deploy/
+│   │   │   │   └── SKILL.md
+│   │   │   └── code-clean/
+│   │   │       └── SKILL.md
+│   │   ├── agents/            # 自定义代理
+│   │   │   └── debug-helper.md
+│   │   ├── commands/          # Slash 命令（可选）
+│   │   ├── hooks/             # 事件处理（可选）
+│   │   ├── .mcp.json          # MCP 配置（可选）
+│   │   └── README.md          # 插件说明文档
+│   └── anki-card-from-notes/  # 笔记转 Anki 卡片
 │       ├── .claude-plugin/
 │       │   └── plugin.json    # 插件元数据
-│       ├── skills/            # Agent Skills
-│       │   ├── quick-deploy/
-│       │   │   └── SKILL.md
-│       │   └── code-clean/
-│       │       └── SKILL.md
-│       ├── agents/            # 自定义代理
-│       │   └── debug-helper.md
-│       ├── commands/          # Slash 命令（可选）
-│       ├── hooks/             # 事件处理（可选）
-│       ├── .mcp.json          # MCP 配置（可选）
-│       └── README.md          # 插件说明文档
+│       ├── skills/
+│       │   └── anki-card-from-notes/
+│       │       ├── SKILL.md
+│       │       └── references/
+│       │           └── card-format.md
+│       └── README.md
 └── README.md
 ```
 

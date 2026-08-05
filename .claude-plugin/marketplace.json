@@ -17,6 +17,11 @@
       "source": "./plugins/my-utils"
     },
     {
+      "name": "anki-card-from-notes",
+      "description": "把笔记/讲义/书摘转成 markdown_sync_to_anki 格式的 Anki 卡片，含完整格式契约与排查指南",
+      "source": "./plugins/anki-card-from-notes"
+    },
+    {
       "name": "obsidian-skills",
       "description": "Create and edit Obsidian vault files including Markdown, Bases, and Canvas. Use when working with .md, .base, or .canvas files in an Obsidian vault.",
       "author": {

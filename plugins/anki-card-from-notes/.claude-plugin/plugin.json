@@ -1,0 +1,9 @@
+{
+  "name": "anki-card-from-notes",
+  "version": "1.0.0",
+  "description": "把笔记/讲义/书摘转成 markdown_sync_to_anki 格式的 Anki 卡片，含完整格式契约与排查指南",
+  "author": {
+    "name": "yuelezhou"
+  },
+  "license": "MIT"
+}
