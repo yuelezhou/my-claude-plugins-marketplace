@@ -10,8 +10,10 @@ check_anki_cards.py — 校验 markdown_sync_to_anki / Obsidian Anki 格式的�
   2. deck / tags / note_type 字段格式合法
   3. 标题层级合法：卡片名用 ##，字段用 ####，元数据键用 #####（仅元数据段内），
      禁止使用 # / ### / ######
-  4. 字段名只能是：正面 / 背面 / 笔记 / Text / Back Extra / 元数据
+  4. 字段名只能是：正面 / 背面 / 笔记 / Text / Back Extra / 元数据（标准类型强制；
+     自定义 note_type 下降级为提示，字段名以 Anki 模板为准）
   5. Basic 卡必须有「正面」+「背面」；Cloze 卡必须有含 {{c1::...}} 挖空的「Text」
+     （自定义 note_type 跳过此完整性校验）
   6. Cloze 挖空编号 c1/c2/c3... 必须从 1 开始连续
   7. 新卡不允许出现 ##### id（已同步过的卡由同步工具回写 id，可忽略此条）
   8. fenced 代码块内不允许出现以 ## / #### 开头的行（会被解析器误识别为卡片/字段）
@@ -35,8 +37,8 @@ if hasattr(sys.stdout, "reconfigure"):
 
 FIELD_NAMES = ("正面", "背面", "笔记", "Text", "Back Extra", "元数据")
 META_KEYS = ("deck", "tags", "note_type", "id")
-FILE_NOTE_TYPES = ("basic", "cloze", "正面-背面-笔记")
-CARD_NOTE_TYPES = ("basic", "cloze")
+# 已知字段结构、可做完整性校验的 note_type；其余值视为 Anki 用户自定义类型（无法校验结构，仅提示）
+KNOWN_STRUCT_TYPES = ("basic", "cloze", "正面-背面-笔记")
 
 FENCE_RE = re.compile(r"^\s*(`{3,}|~{3,})")
 H2_RE = re.compile(r"^##\s+\S")
@@ -116,8 +118,9 @@ class Checker:
                 self.warning(2, "tags 格式可疑（应为 YAML 数组 [a, b] 或逗号分隔 a, b）: %r" % t)
         if "note_type" in fm:
             nt = fm["note_type"]
-            if nt not in FILE_NOTE_TYPES:
-                self.error(2, "note_type 未知: %r（允许 basic / cloze / 正面-背面-笔记）" % nt)
+            if nt not in KNOWN_STRUCT_TYPES:
+                self.warning(2, "note_type 是自定义类型: %r，无法校验字段结构，请确认字段与 Anki 模板一致"
+                               "（可校验类型: basic / cloze / 正面-背面-笔记）" % nt)
         fm.setdefault("note_type", "basic")
         return fm, end
 
@@ -135,9 +138,11 @@ class Checker:
         card_meta = {}                # meta key -> value
         card_clozes = []
         card_has_id = False
+        card_unknown_fields = []      # [(lineno, name)] 不在标准契约内的字段名
 
         def flush_card():
             nonlocal card_fields, card_meta, card_clozes, card_has_id, in_metadata, current_field
+            nonlocal card_unknown_fields
             if current_card_lineno is None:
                 return
             nt = card_meta.get("note_type", file_note_type)
@@ -147,11 +152,20 @@ class Checker:
                     self.error(current_card_lineno, "Cloze 卡缺少 Text 字段")
                 if not card_clozes:
                     self.error(current_card_lineno, "Cloze 卡的 Text 必须至少含一个 {{c1::...}} 挖空")
-            else:
+            elif nt in ("basic", "正面-背面-笔记"):
                 if "正面" not in fields:
                     self.error(current_card_lineno, "Basic 卡缺少「正面」字段")
                 if "背面" not in fields:
                     self.error(current_card_lineno, "Basic 卡缺少「背面」字段")
+            else:
+                self.warning(current_card_lineno, "自定义 note_type %r，跳过卡片结构校验（请确保字段与 Anki 模板一致）" % nt)
+            if card_unknown_fields:
+                if nt in KNOWN_STRUCT_TYPES:
+                    for fl, name in card_unknown_fields:
+                        self.error(fl, "未知字段名: %r（只能是 正面/背面/笔记/Text/Back Extra/元数据）" % name)
+                else:
+                    for fl, name in card_unknown_fields:
+                        self.warning(fl, "自定义类型下字段名 %r 不在标准契约中，请确认与 Anki 模板一致" % name)
             if card_clozes:
                 nums = sorted({int(n) for n in card_clozes})
                 if nums != list(range(1, nums[-1] + 1)):
@@ -163,6 +177,7 @@ class Checker:
             card_meta = {}
             card_clozes = []
             card_has_id = False
+            card_unknown_fields = []
             in_metadata = False
             current_field = None
 
@@ -214,7 +229,7 @@ class Checker:
                         in_metadata = (name == "元数据")
                         current_field = name
                     else:
-                        self.error(lineno, "未知字段名: %r（只能是 正面/背面/笔记/Text/Back Extra/元数据）" % content)
+                        card_unknown_fields.append((lineno, content))
                         in_metadata = False
                         current_field = None
             elif H5_RE.match(line):
@@ -227,8 +242,9 @@ class Checker:
                     elif key == "note_type":
                         j = next_nonempty(i)
                         val = self.lines[j].strip() if j < len(self.lines) else ""
-                        if val not in CARD_NOTE_TYPES:
-                            self.error(lineno, "卡级 note_type 只能是 basic 或 cloze，当前: %r" % val)
+                        if val not in KNOWN_STRUCT_TYPES:
+                            self.warning(lineno, "卡级 note_type 是自定义类型: %r，无法校验字段结构"
+                                       "（可校验类型: basic / cloze）" % val)
                         card_meta["note_type"] = val
                     elif key == "id":
                         card_has_id = True

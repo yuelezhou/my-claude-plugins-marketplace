@@ -39,7 +39,7 @@ CASES = [
     ("anki_false", "---\nanki: false\n---\n" + CARD, 1, ["anki 必须是 true"], []),
     ("deck_empty", "---\nanki: true\ndeck: \n---\n" + CARD, 0, ["deck 为空"], []),
     ("bad_tags", "---\nanki: true\ntags: [algo bst]\n---\n" + CARD, 0, ["tags 格式可疑"], []),
-    ("unknown_note_type", "---\nanki: true\nnote_type: weird\n---\n" + CARD, 1, ["note_type 未知"], []),
+    ("custom_note_type_warns", "---\nanki: true\nnote_type: 概念卡\n---\n" + CARD, 0, ["自定义类型"], []),
     ("legacy_note_type", "---\nanki: true\nnote_type: 正面-背面-笔记\n---\n" + CARD, 0, [], []),
     ("fm_default_basic", FM + CARD, 0, [], []),
 
@@ -76,8 +76,11 @@ CASES = [
     # ---- 元数据段 ----
     ("meta_bad_key", FM + "\n## 卡\n\n#### 正面\nq\n\n#### 背面\na\n\n#### 元数据\n##### foobar\nx\n",
      1, ["元数据键只能是"], []),
-    ("meta_bad_note_type", FM + "\n## 卡\n\n#### 正面\nq\n\n#### 背面\na\n\n#### 元数据\n##### note_type\nweird\n",
-     1, ["卡级 note_type 只能是"], []),
+    ("meta_custom_note_type", FM + "\n## 卡\n\n#### 正面\nq\n\n#### 背面\na\n\n#### 元数据\n##### note_type\n逐字翻译\n",
+     0, ["卡级 note_type 是自定义类型"], []),
+    ("custom_type_custom_field", "---\nanki: true\nnote_type: 概念卡\n---\n\n## 卡\n\n#### 术语\nfoo\n",
+     0, ["跳过卡片结构校验", "不在标准契约中"], []),
+    ("custom_type_basic_fields_ok", "---\nanki: true\nnote_type: 概念卡\n---\n" + CARD, 0, [], []),
     ("meta_id_warning", FM + "\n## 卡\n\n#### 正面\nq\n\n#### 背面\na\n\n#### 元数据\n##### id\n123\n",
      0, ["本卡含 ##### id"], []),
     ("meta_full_override", FM + "\n## 卡\n\n#### 正面\nq\n\n#### 背面\na\n\n#### 元数据\n##### deck\n其他::牌组\n##### tags\nx, y\n##### note_type\nbasic\n",
