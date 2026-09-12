@@ -22,6 +22,11 @@
       "source": "./plugins/anki-card-from-notes"
     },
     {
+      "name": "mineru-book-ocr",
+      "description": "书籍 PDF → MinerU 云端 OCR → 坚果云读书笔记的完整流水线：按 200 页拆分、批量提交解析、归档成读书笔记并生成导读与 Anki 卡片",
+      "source": "./plugins/mineru-book-ocr"
+    },
+    {
       "name": "obsidian-skills",
       "description": "Create and edit Obsidian vault files including Markdown, Bases, and Canvas. Use when working with .md, .base, or .canvas files in an Obsidian vault.",
       "author": {

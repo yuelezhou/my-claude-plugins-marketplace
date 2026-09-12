@@ -1,0 +1,9 @@
+{
+  "name": "mineru-book-ocr",
+  "version": "1.0.0",
+  "description": "书籍 PDF → MinerU 云端 OCR → 坚果云读书笔记的完整流水线：按 200 页拆分、驱动 MinerU 桌面版批量提交解析、收集产物、合并拆章归档成读书笔记并生成导读与 Anki 卡片",
+  "author": {
+    "name": "yuelezhou"
+  },
+  "license": "MIT"
+}
