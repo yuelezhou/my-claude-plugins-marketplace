@@ -1,0 +1,9 @@
+{
+  "name": "word-frequency",
+  "version": "1.0.0",
+  "description": "Markdown 词频统计（英语学习向）：专四/专八/CET/考研等等级标注 + COCA 词频排名 + 词典词组识别，生成 HTML 交互报告 / Anki 导入 / CSV",
+  "author": {
+    "name": "yuelezhou"
+  },
+  "license": "MIT"
+}

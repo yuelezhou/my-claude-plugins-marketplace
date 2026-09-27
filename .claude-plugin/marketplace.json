@@ -27,6 +27,11 @@
       "source": "./plugins/mineru-book-ocr"
     },
     {
+      "name": "word-frequency",
+      "description": "Markdown 词频统计（英语学习向）：专四/专八/CET/考研等等级标注 + COCA 词频排名 + 词典词组识别，生成 HTML 交互报告 / Anki 导入 / CSV，自带词典数据开箱即用",
+      "source": "./plugins/word-frequency"
+    },
+    {
       "name": "obsidian-skills",
       "description": "Create and edit Obsidian vault files including Markdown, Bases, and Canvas. Use when working with .md, .base, or .canvas files in an Obsidian vault.",
       "author": {
