@@ -21,16 +21,17 @@
 
 | | |
 |---|---|
-| 输入 | `待处理\*.pdf`；MinerU 桌面版（必须带 `--force-renderer-accessibility` 启动） |
+| 输入 | `待处理\*.pdf`；MinerU 桌面版（以 `--force-renderer-accessibility --remote-debugging-port=9223` 启动） |
 | 产物 | `C:\Users\yuele\MinerU\data\mineru.db` 表 `taskData` 新增记录：`file_name`、`state`（初始 waiting-file/uploading）、`task_id`、`batch_id`、`origin_file_path` |
-| 校验 | sqlite 查 `taskData`；界面元素 `选择文件: N 个文件` |
+| 校验 | sqlite 查 `taskData`；路线 A 看界面元素 `选择文件: N 个文件`，路线 B 看 `submit_via_cdp.py` 的写回校验与入库报告 |
 
 通过标准：
 
-1. 库中新增记录数 == 本批计划提交数（多选脚本复核过的选中数）。
+1. 库中新增记录数 == 本批计划提交数。
 2. 每条记录的 `origin_file_path` 指向 `待处理\` 里的正确文件（路径对、无同名混淆）。
-3. 无重复提交：同名 `file_name` 已有非 failed 记录的不再提交（断点续跑按后缀排除）。
-4. 单批 ≤20 个文件；列表虚拟化只能选到可见行，超出的用临时目录分批。
+3. 无重复提交：同名 `file_name` 已有**非 failed** 记录的不再提交；failed 旧记录与新记录并存属正常（重提场景）。
+4. 单批 ≤20 个文件；路线 A 的列表虚拟化只能选到可见行，超出的用临时目录分批。
+5. 提交通道二选一：**路线 A** computer-use 元素操作 + `select_files_uia.ps1` 多选；**路线 B** `submit_via_cdp.py`（CDP 点按钮 + Win32 消息填带引号路径串）。computer-use 工具在会话中途可能消失，路线 B 必须随时可用，做法与时序坑见 `references/cdp-submission.md`。
 
 ## 阶段 3 等待
 
@@ -42,8 +43,8 @@
 
 通过标准：
 
-1. `failed` == 0。有 failed 时逐个看 `err_msg` 决定重提还是放弃，**不许静默跳过**。
-2. 成功任务的 `extract_progress` 里 `extracted_pages == total_pages`。
+1. `failed` == 0。有 failed 时逐个看 `err_msg`：`parsing failed, please try again later` 属云端瞬时错误，**原样重提同一文件**即可；其他错误查明原因再决定。不许静默跳过。重提后库里 failed 旧记录与新记录并存属正常。
+2. **页覆盖以 `*_content_list.json` 为准，`extract_progress` 里的 `extracted_pages` 不可信**（实测出现 unzipped + 105/139 这类数字，但 content_list 实际覆盖全部页）。校验：distinct `page_idx` 数 == `max(page_idx)+1`，缺失列表为空。整章/整段内容在产物里缺失但每页 content 都在时，用 pdfium 在原书 PDF 全文检索特征词：0 命中即源 PDF 本身缺页（渠道版删页），重提 OCR 无用。
 3. 参考速度：113 页约 7 分钟，3,796 页约 30 分钟（云端并行 7~10 个）；显著慢于该量级先确认应用还开着。
 
 ## 阶段 4 收集
@@ -61,7 +62,8 @@
 3. 附属文件 4 类齐全（content_list / model / origin.pdf / layout.json）。
 4. **康熙部首码位 == 0**。
 5. 汉字数 > 0（中文书）；英文原版书 == 0 属正常，不是失败。
-6. 搬运后源目录 `C:\Users\yuele\MinerU\` 只剩 `config.json` 与 `data\`。
+6. **页覆盖零缺失**：`*_content_list.json` 的 distinct `page_idx` 数 == `max(page_idx)+1`（这是页级真相，`extract_progress` 的 extracted_pages 口径不可信）；覆盖全但内容缺章节时，按阶段 3 标准 2 判别是否源 PDF 缺页。
+7. 搬运后源目录 `C:\Users\yuele\MinerU\` 只剩 `config.json` 与 `data\`。
 
 ## 阶段 5 归档
 

@@ -13,7 +13,7 @@ description: 把 PDF 书籍按 200 页拆分、用 computer use 驱动 MinerU �
 |---|---|---|---|---|
 | 1 拆分 | 整本 PDF/EPUB | `待处理\*_N_A-B.pdf`（EPUB 先转 PDF 入 `原书\`） | 页数守恒、区间自洽且连续；EPUB 件康熙部首=0、无越界 | `verify_splits.py` / `epub_to_pdf.py --verify` |
 | 2 提交 | 分片 + 开着的应用 | `mineru.db` 新任务记录 | 记录数==计划数、路径正确、无重复 | 查 `taskData` |
-| 3 等待 | 任务库 | 全部任务终态 | failed==0（有则列出 err_msg），extracted==total | `wait_and_collect.py` |
+| 3 等待 | 任务库 | 全部任务终态；failed 重提，页覆盖以 content_list 为准（extracted_pages 不可信） | `wait_and_collect.py` |
 | 4 收集 | `C:\Users\yuele\MinerU\` 产物目录 | `minuer_u未处理\<分片>.pdf-<uuid>\` | full.md 非空、图片引用零缺失、4 类附属文件齐、康熙部首=0 | `wait_and_collect.py --collect --verify` |
 | 5 归档 | 同一本书的各分片产物 | 笔记库书目录（原文/章节/images/笔记/anki_cards/_work zip） | 脚本校验全过 + zip 完整（过前不删源分片）+ 笔记三段式合规 + `check_anki_cards.py` 0 error | `archive_to_notes.py` / `check_anki_cards.py`（外部） |
 
@@ -67,15 +67,16 @@ MinerU 只吃 PDF，所以先把 EPUB 转 PDF。本机没有 Calibre/pandoc，�
 
 ## 2. 提交到 MinerU 桌面版
 
-**先做这一步：把应用拉起来，并且带上可访问性开关。**
+**先做这一步：把应用拉起来，带可访问性开关 + 调试端口（两个开关平时都开着，无副作用）。**
 
 ```bash
-powershell -NoProfile -Command "Stop-Process -Name MinerU -Force -ErrorAction SilentlyContinue; Start-Sleep -Seconds 3; Start-Process -FilePath 'C:\Users\yuele\AppData\Local\Programs\MinerU\MinerU.exe' -ArgumentList '--force-renderer-accessibility'; Start-Sleep -Seconds 25"
+powershell -NoProfile -Command "Stop-Process -Name MinerU -Force -ErrorAction SilentlyContinue; Start-Sleep -Seconds 3; Start-Process -FilePath 'C:\Users\yuele\AppData\Local\Programs\MinerU\MinerU.exe' -ArgumentList '--force-renderer-accessibility','--remote-debugging-port=9223'; Start-Sleep -Seconds 25"
 ```
 
-不加 `--force-renderer-accessibility` 的话，可访问性树几乎是空的（只剩关闭/最大化/最小化三个按钮），任何语义操作都无处落脚。加了之后界面完整暴露（150~330 个元素）。
+- `--force-renderer-accessibility`：让 computer-use 能读到完整界面树（150~330 个元素）。注意它**只对 computer-use 这类 AT 生效**——PowerShell 普通UIA 对主窗口只能看到 2 个元素，等再久也不生长。
+- `--remote-debugging-port=9223`：开 DevTools 通道，是路线 B（备用提交路径）的入口。**computer-use 工具不是每个会话都可用**（同一会话早期可用、后面轮次可能消失），所以备用路径必须随时可切。
 
-### 提交流程
+### 路线 A：computer-use 元素操作（工具可用时的首选）
 
 1. `get_app_state` 找到 `上传文件` 按钮，元素点击。
 2. 系统文件对话框弹出（一般停在上次的目录）。把 `文件名(N)` 输入框设成目标**目录**路径，点 `打开(O)` —— 目录路径会让它进入该目录，而不是关掉对话框。
@@ -83,28 +84,30 @@ powershell -NoProfile -Command "Stop-Process -Name MinerU -Force -ErrorAction Si
 4. 点 `打开(O)`。应用会弹出「自定义页码（仅PDF）」确认框，列出每个文件及其页数范围（默认全选 1-N 页）。
 5. 点 `上传`。任务即进入云端队列；应用每 5 秒轮询一次状态。
 
-### 多选对话框：唯一可靠的做法
+路线 A 的多选用 `scripts/select_files_uia.ps1`：对列表项调 `SelectionItemPattern.Select()`（第一项）+ `AddToSelection()`（其余），外壳会自动把选中文件名带引号填进文件名框。`-Suffix` 用纯 ASCII 后缀精确匹配/排除文件；**列表是虚拟化的**（只实例化约 15 行），超过就先把目标文件临时移进空目录再选。注意该脚本依赖对话框暴露完整 UIA 视图，部分环境下会退化失效——此时直接改走路线 B。
 
-这是这条链路里最容易卡死的一步，说清楚为什么：
+### 路线 B：CDP + Win32 消息（computer-use 不可用时的备用路径，实测最稳）
 
-- **不能用通配符**。在文件名框里填 `*.pdf` 再点「打开」不会有任何反应——外壳只在**回车**时才把通配符展开成多选。
-- **回车也用不了**。Windows 下键盘输入要求目标窗口在前台，而宿主策略会拒绝 `open_application(activate=true)`（报 `frontmost application is 0 active apps`），所以前台键盘这条路是断的。
-- **可行的做法**：用 PowerShell 的 UI Automation 直接对列表项调用 `SelectionItemPattern.Select()`（第一项）和 `AddToSelection()`（其余）。选中之后，**外壳会自动把选中文件名带引号填进文件名框**，此时再点「打开」就生效了。
+一条命令完成「点上传 → 填路径 → 确认 → 提交 → 验库」：
 
 ```bash
-powershell -NoProfile -ExecutionPolicy Bypass -File scripts/select_files_uia.ps1 -ProcessId <pid> -Suffix "_1_1-164,_2_165-328"
+python scripts/submit_via_cdp.py --files "待处理\书_1_1-193.pdf" "待处理\书_2_194-385.pdf" --port 9223
 ```
 
-用法要点：
+原理（细节、失败案例与时序坑见 `references/cdp-submission.md`）：
 
-- `-Suffix` 用**纯 ASCII 后缀**匹配文件（列表项显示名不含 `.pdf` 扩展名）。不带 `-Suffix` 就是全选当前可见项。
-- **列表是虚拟化的**，`FindAll` 只返回可见的约 15 行。要一次提交多于这个数量的文件，先把目标文件**临时移到一个空目录**让它们全部可见，提交后再移回——这比试图滚动列表可靠得多。
-- 单次上传上限 20 个文件，超过就分批。
-- 排除已经解析过的文件（比如断点续跑）时，也用 `-Suffix` 把它排除——按后缀精确跳过，避免重复消耗额度。
+- 通过调试端口在页面里 `el.click()` 触发「上传文件」（React 合成事件收得到）；WebSocket 握手 403 时客户端用 `suppress_origin=True`（脚本已封装）。
+- 原生「打开」对话框用 **Win32 消息**驱动：`WM_SETTEXT` 往 Edit 子控件写**带引号的多个完整路径**（`"a.pdf" "b.pdf"`），读回校验后 `PostMessage(WM_COMMAND, IDOK)` 关闭并确认——不依赖 UIA（新式对话框把「文件名(N):」暴露成无 ValuePattern 的 Static Pane，UIA 旧路会失败），也不需要先导航目录或列表多选。
+- 「自定义页码」确认框是网页内弹层：等页面出现该文本后，点击文本恰为「上传」的按钮（精确匹配，避免命中「上传文件」主按钮）。
+- 提交后自动查 `taskData` 报告新增记录数。
 
-### 如果应用是别人正常打开的
+### 两条路线的共同纪律
 
-可访问性树读不到就说明它没带那个开关。**先问用户能不能重启它**，不要盲试坐标点击。
+- **上传流程中绝不 reload 页面**：原生对话框挂在渲染页面上，reload 会立刻杀掉它，已选路径全部丢失；对话框弹出约 40 秒后也可能自关。动作要连贯，失败就重新点「上传文件」再走一遍。
+- **不能用通配符**：文件名框里填 `*.pdf` 点「打开」没有反应——外壳只在**回车**时才展开通配符。多文件要么引号路径串（路线 B），要么列表多选（路线 A）。
+- **单次上传上限 20 个文件**；断点续跑时从文件列表里直接剔除已解析的分片。
+- 回车/前台键盘不可用（宿主拒绝 `open_application(activate=true)`，报 `frontmost application is 0 active apps`），别尝试往对话框打字。
+- 如果应用是别人正常打开的：没带开关就没法语义驱动，**先问用户能不能重启它**，不要盲试坐标点击。
 
 ## 3. 等待
 
@@ -159,7 +162,15 @@ python scripts/archive_to_notes.py \
 | 现象 | 原因与处理 |
 |---|---|
 | 应用界面读不到（只有三个窗口按钮） | 没带 `--force-renderer-accessibility`，重启它 |
-| 文件名框填了 `*.pdf`，点「打开」没反应 | 通配符只在回车时展开；改用 UIA 选中列表项 |
+| computer-use 工具本轮不可用（工具清单里没有） | 正常现象，同一会话后面轮次可能消失；切路线 B `scripts/submit_via_cdp.py`（启动要带 `--remote-debugging-port=9223`） |
+| PowerShell UIA 对主窗口只看到 2 个元素，等也不生长 | Electron 渲染层树不对普通 UIA 客户端开放（`--force-renderer-accessibility` 只喂 computer-use 这类 AT）；驱动页面走 CDP，原生对话框走 Win32 消息 |
+| CDP WebSocket 握手 403 Forbidden | Chromium 拒带 Origin 的连接；`suppress_origin=True` 或启动加 `--remote-allow-origins=*` |
+| 原生对话框约 40 秒后自己消失 / reload 后对话框没了 | 对话框挂在渲染页面上，reload 即杀；上传流程禁止 reload，动作连贯，失败重跑 `submit_via_cdp.py` |
+| 「文件名(N):」是 Static Pane、没有 ValuePattern，UIA 写不进 | 新式对话框的 UIA 退化视图；改用 Win32 消息：WM_SETTEXT 往 Edit 子控件写带引号路径串 + IDOK（`submit_via_cdp.py` 已封装） |
+| state=failed，err_msg='parsing failed, please try again later' | 云端瞬时错误；原样重提同一文件即可，库里 failed 旧记录 + 新记录并存属正常 |
+| unzipped 但 extracted_pages 显示 105/139 这类缺页 | 进度计数不可信；用 `*_content_list.json` 的 distinct page_idx 校验页覆盖，真缺再重提 |
+| 产物里整章/整段内容缺失，但每页 content 都在 | 多半是源 PDF 本身缺页（渠道版删页）；用 pdfium 在原书 PDF 全文检索特征词，0 命中即实锤，重提 OCR 无用，笔记里放缺页说明占位 |
+| 文件名框填了 `*.pdf`，点「打开」没反应 | 通配符只在回车时展开；路线 A 用 UIA 选中列表项，路线 B 用引号路径串 |
 | 回车/输入无效，报 `frontmost_pid_mismatch` | 宿主拒绝激活窗口，前台键盘不可用；走元素点击 + UIA 脚本 |
 | 选中的文件数不对（少了） | 列表虚拟化只实例化约 15 行；用临时目录让目标全部可见 |
 | 元素索引对不上 | 应用视图会随最近文件卡片变化而位移；**每次元素写入前重新 `get_app_state`**，写入会消耗 state |
@@ -173,10 +184,12 @@ python scripts/archive_to_notes.py \
 ## 相关文件
 
 - `references/mineru-desktop-internals.md` — 桌面版的路径、库表结构、状态机、配额限制，以及与官方 API 的对比（含 API token 14 天过期的坑）
+- `references/cdp-submission.md` — **CDP + Win32 备用提交通道**的完整打法：三条驱动通道的实测边界、Win32 消息填路径、时序坑（40 秒自关 / reload 杀对话框）、云端瞬时失败重提、extracted_pages 不可信与源 PDF 缺页判别
 - `references/epub-to-pdf.md` — EPUB 转换的完整配方、字体坑的原理与验证方法
 - `references/notes-archive.md` — 归档规范：笔记库结构、笔记三段式格式、Anki deck/tags 约定、逐章生成的节奏
 - `references/pipeline-contracts.md` — **每步的输入/产物/验收标准**（含数值判据与退出条件），执行中拿不准是否放行就查它
-- `scripts/select_files_uia.ps1` — 文件对话框多选（**必须保持纯 ASCII**：PowerShell 5.1 按 ANSI 读 `.ps1`，中文注释会导致语法错误）
+- `scripts/submit_via_cdp.py` — **无 computer-use 时的提交脚本**：CDP 点按钮 + Win32 消息填路径 + 确认上传 + 验库，一条命令（依赖 `pip install --user websocket-client`）
+- `scripts/select_files_uia.ps1` — 文件对话框列表多选（路线 A 用；**必须保持纯 ASCII**：PowerShell 5.1 按 ANSI 读 `.ps1`，中文注释会导致语法错误；对话框 UIA 视图退化时改走路线 B）
 - `scripts/verify_splits.py` — 拆分页数守恒校验
 - `scripts/wait_and_collect.py` — 等待全部完成并把产物收进 `minuer_u未处理`
 - `scripts/epub_to_pdf.py` — EPUB → 单 HTML → Edge 无头打印 PDF，含校验
