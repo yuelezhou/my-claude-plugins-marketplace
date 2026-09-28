@@ -18,10 +18,11 @@
 | 插件 | 内容 |
 |---|---|
 | hello-greeting | 演示插件 |
-| my-utils | skills（quick-deploy、code-clean）+ 自定义 agent |
+| demo-case | skills（quick-deploy、code-clean）+ 自定义 agent |
 | anki-card-from-notes | 笔记 → markdown_sync_to_anki 格式 Anki 卡片 |
 | mineru-book-ocr | 书籍 PDF → MinerU 云端 OCR → 读书笔记流水线（拆分→提交→等待→收集→归档） |
 | word-frequency | 英文词频统计，HTML / Anki / CSV 输出，自带词典数据 |
+| skill-distributor | 本地 skill 分发与台账核对（link / status / audit / dupes / clean） |
 | gitee-mcp | Gitee 云端 Remote MCP 封装（`.mcp.json`，需 `GITEE_ACCESS_TOKEN` 环境变量） |
 | plugin-validator | **其他插件发布前必须运行的验证工具**（`check_plugin.py`，0 error 才能发布） |
 | obsidian-skills | 外部插件（github: kepano/obsidian-skills），本地无源码 |
@@ -60,6 +61,14 @@ claude plugin marketplace add local .
 
 - https://code.claude.com/docs/en/plugins/overview — Claude Code 插件官方文档：插件的制作、结构、市场（marketplace）的配置与发布都在这里
 
+## Skill 管理政策（双正本制，ADR-0001）
+
+- **自研 skill** 正本在本仓库 `plugins/<名>/skills/<名>/`，由 skill-distributor 插件分发：`python plugins/skill-distributor/skills/skill-distributor/scripts/skill_distributor.py link`（幂等，兼容入口 `scripts/link_skills.py`）；枢纽里的自研条目永远是链接——改枢纽就是改仓库，新插件建好后重跑 link
+- **第三方 skill** 正本即 `~/.agents/skills/` 安装实体；常用清单在 PROMPT-INSTALL.md（声明式，只记用什么和怎么装，不记安装状态；「哪个装了哪个没装」用 skill-distributor 的 `audit` 子命令核对）
+- ZCode / MiniMax / OpenCode / DeepSeek Deep Code 原生读枢纽；Claude Code 只认 `~/.claude/skills/`，**链接层禁放与枢纽不同内容的实体**（MiniMax 的 cc 根优先级 40 > agents 根 30，同名异内容会被静默择优）
+- 新机器复现：clone → `python scripts/link_skills.py` → 按 PROMPT-INSTALL.md 补装第三方
+- 术语定义见 CONTEXT.md（自研/第三方、正本、运行时枢纽、复现、漂移、台账）
+
 ## 关键文档（改敏感区前先读）
 
 - `plugins/anki-card-from-notes/skills/anki-card-from-notes/references/card-format.md` — Anki 卡片格式契约
@@ -71,7 +80,7 @@ claude plugin marketplace add local .
 
 ### Issue tracker
 
-Issue 以本地 markdown 追踪：`.scratch/<feature>/` 目录下 `spec.md` + `issues/NN-<slug>.md`，不使用 GitHub/Gitee Issue。见 `docs/agents/issue-tracker.md`。
+Issue 以本地 markdown 追踪，**按插件分域**：`.scratch/<插件名>/<feature>/`（仓库级事务用 `.scratch/market/<主题>/`），每票头部带 `Plugin:` 与 `Status:` 行，不使用 GitHub/Gitee Issue。见 `docs/agents/issue-tracker.md`。
 
 ### Triage labels
 

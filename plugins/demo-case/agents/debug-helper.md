@@ -1,3 +1,8 @@
+---
+name: debug-helper
+description: 调试助手代理——理解报错、定位根因、给出修复方案并验证。当用户说"帮我调试 / 分析这个 bug / 为什么报错"时使用。
+---
+
 # Debug Helper Agent
 
 调试助手代理，帮助分析和修复 bug。

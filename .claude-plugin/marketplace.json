@@ -12,9 +12,9 @@
       "source": "./plugins/hello-greeting"
     },
     {
-      "name": "my-utils",
-      "description": "个人常用工具集合",
-      "source": "./plugins/my-utils"
+      "name": "demo-case",
+      "description": "个人常用工具集合 - 包含日常工作流中常用的技能和代理",
+      "source": "./plugins/demo-case"
     },
     {
       "name": "anki-card-from-notes",
@@ -48,6 +48,11 @@
       "name": "plugin-validator",
       "description": "其他插件发布前必须运行的验证工具：静态校验 plugin.json / SKILL.md / marketplace 注册 / 脚本语法 / 组件 JSON，确认插件能在 Claude Code 中正确加载运行",
       "source": "./plugins/plugin-validator"
+    },
+    {
+      "name": "skill-distributor",
+      "description": "本地 skill 分发与台账核对：把仓库自研 skill 以 junction 分发进 ~/.agents/skills 枢纽与 ~/.claude/skills 链接层，按 PROMPT-INSTALL.md 核对哪个装了哪个没装，检测同名多拷贝漂移与悬空链接",
+      "source": "./plugins/skill-distributor"
     },
     {
       "name": "gitee-mcp",

@@ -1,6 +1,6 @@
-# My Utils Plugin
+# Demo Case Plugin
 
-个人常用工具集合插件。
+演示与个人常用工具集合插件。
 
 ## 📦 包含内容
 
@@ -16,14 +16,14 @@
 ## 🚀 安装
 
 ```bash
-claude plugin install ./plugins/my-utils
+claude plugin install ./plugins/demo-case
 ```
 
 ## 📝 使用
 
 ```bash
 # 使用技能
-请帮我 /my-utils:quick-deploy 部署应用
+请帮我 /demo-case:quick-deploy 部署应用
 
 # 使用代理
 @debug-helper 帮我分析这个 bug

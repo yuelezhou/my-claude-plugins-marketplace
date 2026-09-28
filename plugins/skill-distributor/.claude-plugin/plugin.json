@@ -1,0 +1,9 @@
+{
+  "name": "skill-distributor",
+  "version": "1.0.0",
+  "description": "本地 skill 分发与台账核对：把仓库自研 skill 以 junction 分发进 ~/.agents/skills 枢纽与 ~/.claude/skills 链接层，按 PROMPT-INSTALL.md 核对哪个装了哪个没装，检测同名多拷贝漂移与悬空链接",
+  "author": {
+    "name": "yuelezhou"
+  },
+  "license": "MIT"
+}
