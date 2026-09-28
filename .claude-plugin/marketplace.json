@@ -43,6 +43,16 @@
         "repo": "kepano/obsidian-skills"
       },
       "homepage": "https://github.com/kepano/obsidian-skills"
+    },
+    {
+      "name": "plugin-validator",
+      "description": "其他插件发布前必须运行的验证工具：静态校验 plugin.json / SKILL.md / marketplace 注册 / 脚本语法 / 组件 JSON，确认插件能在 Claude Code 中正确加载运行",
+      "source": "./plugins/plugin-validator"
+    },
+    {
+      "name": "gitee-mcp",
+      "description": "Gitee 官方 MCP Server 的 Claude Code 插件封装：走 Gitee 云端 Remote MCP，免安装，AI 可直接读写仓库、文件、Issue、Pull Request、发行版与通知",
+      "source": "./plugins/gitee-mcp"
     }
   ]
 }

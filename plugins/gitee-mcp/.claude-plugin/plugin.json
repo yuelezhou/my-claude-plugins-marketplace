@@ -1,0 +1,9 @@
+{
+  "name": "gitee-mcp",
+  "version": "1.0.0",
+  "description": "Gitee 官方 MCP Server 的 Claude Code 插件封装：走 Gitee 云端 Remote MCP，免安装，AI 可直接读写仓库、文件、Issue、Pull Request、发行版与通知",
+  "author": {
+    "name": "yuelezhou"
+  },
+  "license": "MIT"
+}
