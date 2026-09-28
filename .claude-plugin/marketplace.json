@@ -28,7 +28,7 @@
     },
     {
       "name": "word-frequency",
-      "description": "Markdown 词频统计（英语学习向）：专四/专八/CET/考研等等级标注 + COCA 词频排名 + 词典词组识别，生成 HTML 交互报告 / Anki 导入 / CSV，自带词典数据开箱即用",
+      "description": "词频统计（英语学习向）：txt / markdown / 非扫描版 PDF 输入，专四/专八/CET/考研等等级标注 + COCA 词频排名 + 词典词组识别，生成 HTML 交互报告 / Anki 导入 / CSV，自带词典数据开箱即用",
       "source": "./plugins/word-frequency"
     },
     {
