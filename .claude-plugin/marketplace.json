@@ -23,7 +23,7 @@
     },
     {
       "name": "mineru-book-ocr",
-      "description": "书籍 PDF → MinerU 云端 OCR → 坚果云读书笔记的完整流水线：按 200 页拆分、批量提交解析、归档成读书笔记并生成导读与 Anki 卡片",
+      "description": "书籍 PDF → MinerU 云端 OCR → 坚果云读书笔记的完整流水线：按 200 页拆分、驱动 MinerU 桌面版批量提交解析、收集产物、合并拆章归档成读书笔记并生成导读与 Anki 卡片",
       "source": "./plugins/mineru-book-ocr"
     },
     {
@@ -53,6 +53,25 @@
       "name": "skill-distributor",
       "description": "本地 skill 分发与台账核对：把仓库自研 skill 以 junction 分发进 ~/.agents/skills 枢纽与 ~/.claude/skills 链接层，按 PROMPT-INSTALL.md 核对哪个装了哪个没装，检测同名多拷贝漂移与悬空链接",
       "source": "./plugins/skill-distributor"
+    },
+    {
+      "name": "mattpocock-skills",
+      "description": "Matt Pocock's agent skills for real engineering: grilling, spec/ticket flows, TDD, code review, domain modelling and more. Plug-and-play, not vibe coding.",
+      "author": {
+        "name": "Matt Pocock",
+        "url": "https://www.aihero.dev"
+      },
+      "homepage": "https://www.aihero.dev/s/skills-newsletter",
+      "source": {
+        "source": "github",
+        "repo": "mattpocock/skills"
+      },
+      "metadata": {
+        "pinnedRef": "main",
+        "pinnedSha": "484efcbe67ae1e558b4df95bfc90135b7b0c9df8",
+        "pinnedAt": "2026-09-29",
+        "note": "外部聚合插件（引用式 + pin SHA）；入库前已过 plugin-validator --standalone（纯 skills，三平台全兼容）"
+      }
     },
     {
       "name": "gitee-mcp",

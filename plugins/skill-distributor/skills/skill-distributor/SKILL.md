@@ -4,10 +4,11 @@ description: |
   本地 skill 分发与台账核对工具。把 market 仓库的自研 skill 以 junction 分发进
   ~/.agents/skills 运行时枢纽（ZCode / MiniMax / OpenCode / DeepSeek Deep Code 原生读）
   与 ~/.claude/skills 链接层（Claude Code 专用），按 PROMPT-INSTALL.md 台账核对
-  "哪个装了哪个没装"，盘点各层条目类型，检测同名多拷贝漂移、悬空链接与链接层违规实体。
-  触发：用户说"同步/分发 skill"、"核对台账 / 检查哪些 skill 没装"、"skill 装到哪了"、
-  "盘点本地 skill"、"查看/清理重复 skill"、"有重复的 skill 帮我处理掉"，
-  或在本仓库新建插件后要暴露给各 agent 时。
+  "哪个装了哪个没装"，盘点各层条目类型，检测同名多拷贝漂移、悬空链接与链接层违规实体；
+  并按 agent 矩阵分发**插件**：Claude/ZCode 市场注册、MiniMax 物理拷贝 + 新鲜度比对。
+  触发：用户说"同步/分发 skill"、"同步/分发插件"、"核对台账 / 检查哪些 skill 没装"、
+  "skill 装到哪了"、"盘点本地 skill"、"查看/清理重复 skill"、"有重复的 skill 帮我处理掉"、
+  "插件分发到各 agent"，或在本仓库新建插件后要暴露给各 agent 时。
   不用于：编写新 skill（用 skill-creator）、校验插件结构（用 plugin-validator）、
   marketplace 插件的安装（走各 agent 自己的 CLI）。
 displayNames:
@@ -66,3 +67,18 @@ displayNames:
    - 永不触碰：枢纽正本实体、所有 junction 链接、单一私有目录独占的合法 skill（如 MiniMax 云端装的）
 
 6. 交付说明里给结果表：装了 / 没装 / 修复了什么；核对结果**不回写**台账（台账是声明式的）
+
+## 插件层分发（link-plugins）
+
+插件与 skill 机制不同，**按 agent 矩阵**执行（依据 research.md 两轮调研）：
+
+```bash
+python "<skill目录>/scripts/skill_distributor.py" link-plugins                    # 全部 agent
+python "<skill目录>/scripts/skill_distributor.py" link-plugins --agents minimax  # 只拷 MiniMax
+```
+
+- **Claude Code**：一次性 `claude plugin marketplace add <仓库>`（本地目录市场原位加载）+ 逐插件 install；已注册则跳过
+- **ZCode**：`zcode plugins marketplace add yuelezhou/my-claude-plugins-marketplace` + install；已装则走 `marketplace update` + `plugin update` 两步刷新（CLI 不在 PATH 时打印手动命令）
+- **MiniMax Code**：物理拷贝到 `~/.minimax/plugins/<名>/`（拒收一切链接）；`status`/`audit` 报告副本新鲜度（STALE=仓库已更新），`clean` 可删过期副本（确认机制同 skill）
+- DeepSeek / OpenCode 无插件机制，跳过
+- 正本 = 仓库 `plugins/`；分发源 = GitHub 镜像；`~/.agents/plugins` 枢纽已否决（无 agent 原生扫描）

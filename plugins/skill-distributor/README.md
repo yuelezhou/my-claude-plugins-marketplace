@@ -15,6 +15,7 @@ python skills/skill-distributor/scripts/skill_distributor.py <子命令>
 | `audit` | 核对：status + 按 PROMPT-INSTALL.md 台账逐行给「装了/没装」 |
 | `dupes` | 查看：重复拷贝清单（位置、内容一致否、正本是谁） |
 | `clean` | 清理：删除私有目录里与正本一致的残留拷贝；删前逐项确认，非交互需 `--yes`；内容不一致默认保留（`--force` 强制） |
+| `link-plugins` | 插件分发矩阵：Claude/ZCode 市场注册 + MiniMax 物理拷贝（`--agents` 选目标）；`status`/`audit` 报告 MiniMax 副本新鲜度 |
 
 架构依据见仓库 ADR-0001；各 agent 发现目录与优先级见 `skills/skill-distributor/references/agent-roots.md`。
 

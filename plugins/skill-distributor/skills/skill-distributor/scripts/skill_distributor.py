@@ -26,6 +26,7 @@ OpenCode、Deep Code 原生读）与 Claude Code 层 ~/.claude/skills/（只认�
 
 import argparse
 import hashlib
+import json
 import os
 import re
 import shutil
@@ -38,6 +39,8 @@ IS_WIN = os.name == "nt"
 HOME = os.path.expanduser("~")
 HUB = os.path.join(HOME, ".agents", "skills")
 CC = os.path.join(HOME, ".claude", "skills")
+MINIMAX_PLUGINS = os.path.join(HOME, ".minimax", "plugins")
+GITHUB_REPO = "yuelezhou/my-claude-plugins-marketplace"
 # 其他 agent 的私有 skill 目录：出现同名实体拷贝即为清理候选
 EXTRA_DIRS = [
     ("ZCode", os.path.join(HOME, ".zcode", "skills")),
@@ -45,6 +48,7 @@ EXTRA_DIRS = [
     ("Codex", os.path.join(HOME, ".codex", "skills")),
 ]
 KEBAB_RE = re.compile(r"^[a-z0-9][a-z0-9-]*$")
+WALK_EXCLUDE = {"__pycache__", ".git", "node_modules", ".venv", "venv"}
 
 
 def repo_root(explicit=None):
@@ -156,6 +160,207 @@ def scan_layers():
                 rows.append((name, kind, real))
         inventory[title] = rows
     return layers, inventory
+
+
+def find_own_plugins(root):
+    """本仓库插件名列表（含 .claude-plugin/plugin.json 的目录）。"""
+    plugins_dir = os.path.join(root, "plugins")
+    if not os.path.isdir(plugins_dir):
+        return []
+    return sorted(n for n in os.listdir(plugins_dir)
+                  if os.path.isfile(os.path.join(plugins_dir, n, ".claude-plugin", "plugin.json")))
+
+
+def market_name(root):
+    try:
+        with open(os.path.join(root, ".claude-plugin", "marketplace.json"), encoding="utf-8-sig") as f:
+            return json.load(f).get("name", "my-claude-market")
+    except (OSError, json.JSONDecodeError):
+        return "my-claude-market"
+
+
+def tree_hash(path):
+    """目录内容指纹：相对路径 + 文件内容的 md5（比较副本新鲜度用）。"""
+    h = hashlib.md5()
+    for r, dirs, files in os.walk(path):
+        dirs[:] = sorted(d for d in dirs if d not in WALK_EXCLUDE)
+        for f in sorted(files):
+            fp = os.path.join(r, f)
+            h.update(os.path.relpath(fp, path).replace("\\", "/").encode("utf-8", errors="replace"))
+            try:
+                with open(fp, "rb") as fh:
+                    while True:
+                        chunk = fh.read(65536)
+                        if not chunk:
+                            break
+                        h.update(chunk)
+            except OSError:
+                h.update(b"<unreadable>")
+    return h.hexdigest()
+
+
+def minimax_plugin_state(name, root):
+    """MiniMax 插件副本状态 → (存在?, 新鲜?)。副本必须是物理目录（MiniMax 拒收链接）。"""
+    dest = os.path.join(MINIMAX_PLUGINS, name)
+    if not os.path.isdir(dest):
+        return False, False
+    if is_link(dest):
+        return True, False  # 链接会被 MiniMax 拒收，视为无效副本
+    return True, tree_hash(dest) == tree_hash(os.path.join(root, "plugins", name))
+
+
+def copy_plugin_to_minimax(root, name):
+    """物理拷贝插件到 MiniMax 扫描根（先删旧副本保证无残留）。"""
+    src = os.path.join(root, "plugins", name)
+    dest = os.path.join(MINIMAX_PLUGINS, name)
+    if os.path.lexists(dest):
+        if is_link(dest):
+            os.rmdir(dest)
+        else:
+            shutil.rmtree(dest)
+    os.makedirs(MINIMAX_PLUGINS, exist_ok=True)
+    shutil.copytree(src, dest,
+                    ignore=shutil.ignore_patterns(*(d + "*" for d in WALK_EXCLUDE)),
+                    symlinks=False)
+    return tree_hash(dest) == tree_hash(src)
+
+
+def run_cli(cmd):
+    """跑外部 CLI，返回 (成功?, 输出)。Windows 下 .cmd 需解析全路径并经 shell。"""
+    import subprocess
+    exe = shutil.which(cmd[0]) or cmd[0]
+    if IS_WIN and exe.lower().endswith((".cmd", ".bat")):
+        cmd = ["cmd", "/c", exe] + cmd[1:]
+    else:
+        cmd = [exe] + cmd[1:]
+    try:
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=180,
+                           encoding="utf-8", errors="replace")
+        return r.returncode == 0, (r.stdout or "") + (r.stderr or "")
+    except (OSError, subprocess.TimeoutExpired) as e:
+        return False, str(e)
+
+
+def cmd_link_plugins(root, agents):
+    """按 agent 矩阵分发插件：Claude/ZCode=市场注册（GitHub/本地），MiniMax=物理拷贝。"""
+    own = find_own_plugins(root)
+    if not own:
+        print("未找到插件（plugins/*/.claude-plugin/plugin.json）")
+        return 1
+    market = market_name(root)
+    failures = 0
+
+    if "claude" in agents:
+        print("== Claude Code：本地目录市场（原位加载）")
+        if not shutil.which("claude"):
+            print("  SKIP     未找到 claude CLI——请手动执行：")
+            print(f"             claude plugin marketplace add \"{root}\"")
+            print(f"             claude plugin install <名>@{market}   # 每个插件")
+        else:
+            known = os.path.join(HOME, ".claude", "plugins", "known_marketplaces.json")
+            registered = False
+            try:
+                with open(known, encoding="utf-8-sig") as f:
+                    registered = market in json.load(f)
+            except (OSError, json.JSONDecodeError):
+                pass
+            if registered:
+                print(f"  SKIP     市场 {market} 已注册（本地目录市场原位加载，无需更新动作）")
+            else:
+                ok, out = run_cli(["claude", "plugin", "marketplace", "add", root])
+                print(f"  {'OK' if ok else 'FAIL':8} marketplace add {root}" + (f"\n         {out.strip()[:200]}" if not ok else ""))
+                failures += not ok
+                if ok:
+                    for name in own:
+                        ok2, out2 = run_cli(["claude", "plugin", "install", f"{name}@{market}"])
+                        print(f"  {'OK' if ok2 else 'FAIL':8} install {name}@{market}")
+                        failures += not ok2
+
+    if "zcode" in agents:
+        print("== ZCode：GitHub 市场注册 + 安装（副本制，更新走两步刷新）")
+        if not shutil.which("zcode"):
+            print("  SKIP     未找到 zcode CLI——请手动执行：")
+            print(f"             zcode plugins marketplace add {GITHUB_REPO}")
+            print(f"             zcode plugins install <名>@{market}")
+        else:
+            known = os.path.join(HOME, ".zcode", "cli", "plugins", "known_marketplaces.json")
+            registered = False
+            try:
+                with open(known, encoding="utf-8-sig") as f:
+                    registered = market in json.load(f)
+            except (OSError, json.JSONDecodeError):
+                pass
+            if not registered:
+                ok, out = run_cli(["zcode", "plugins", "marketplace", "add", GITHUB_REPO])
+                print(f"  {'OK' if ok else 'FAIL':8} marketplace add {GITHUB_REPO}" + (f"\n         {out.strip()[:200]}" if not ok else ""))
+                failures += not ok
+            else:
+                ok, out = run_cli(["zcode", "plugins", "marketplace", "update", market])
+                print(f"  {'OK' if ok else 'FAIL':8} marketplace update {market}")
+                failures += not ok
+            installed = {}
+            try:
+                with open(os.path.join(HOME, ".zcode", "cli", "plugins", "installed_plugins.json"),
+                          encoding="utf-8-sig") as f:
+                    installed = json.load(f)
+            except (OSError, json.JSONDecodeError):
+                pass
+            for name in own:
+                pid = f"{name}@{market}"
+                have = pid in installed or pid in (installed.get("plugins", {}) if isinstance(installed.get("plugins"), dict) else {})
+                if have:
+                    ok, out = run_cli(["zcode", "plugins", "update", pid])
+                    print(f"  {'OK' if ok else 'SKIP':8} update {pid}")
+                    failures += not ok
+                else:
+                    ok, out = run_cli(["zcode", "plugins", "install", pid])
+                    print(f"  {'OK' if ok else 'FAIL':8} install {pid}" + (f"\n         {out.strip()[:200]}" if not ok else ""))
+                    failures += not ok
+
+    if "minimax" in agents:
+        print(f"== MiniMax Code：物理拷贝到 {MINIMAX_PLUGINS}（拒收链接，落盘即启用）")
+        for name in own:
+            exists, fresh = minimax_plugin_state(name, root)
+            if exists and fresh:
+                print(f"  SKIP     {name}（副本已新鲜）")
+                continue
+            ok = copy_plugin_to_minimax(root, name)
+            print(f"  {'OK' if ok else 'FAIL':8} copy {name}" + ("（过期副本已替换）" if exists else ""))
+            failures += not ok
+
+    print()
+    print(f"结果: {len(own)} 个插件 × {len(agents)} 个 agent 分发{'完成' if not failures else f'，{failures} 项失败'}")
+    return 1 if failures else 0
+
+
+def print_plugin_freshness(root, problems=None):
+    """status/audit 共用：MiniMax 插件副本新鲜度。"""
+    own = find_own_plugins(root)
+    if not own:
+        return
+    print("== MiniMax 插件副本新鲜度")
+    for name in own:
+        exists, fresh = minimax_plugin_state(name, root)
+        if not exists:
+            print(f"  MISS    {name}（未分发——跑 link-plugins）")
+            if problems is not None:
+                problems.append(f"MiniMax 插件副本缺失: {name}")
+        elif not fresh:
+            print(f"  STALE   {name}（副本与仓库不一致——跑 link-plugins 刷新，或 clean 删除）")
+            if problems is not None:
+                problems.append(f"MiniMax 插件副本过期: {name}")
+        else:
+            print(f"  OK      {name}（副本新鲜）")
+
+
+def stale_minimax_plugins(root):
+    """过期/无效的 MiniMax 插件副本路径列表（clean 用）。"""
+    out = []
+    for name in find_own_plugins(root):
+        exists, fresh = minimax_plugin_state(name, root)
+        if exists and not fresh:
+            out.append((name, os.path.join(MINIMAX_PLUGINS, name)))
+    return out
 
 
 def find_duplicates(layers, inventory, own_paths):
@@ -366,6 +571,7 @@ def parse_ledger(root):
 
 def cmd_status(root):
     _, problems, _, _ = collect_state(root)
+    print_plugin_freshness(root, problems)
     print()
     if problems:
         print(f"结果: {len(problems)} 项异常 —— ")
@@ -378,6 +584,7 @@ def cmd_status(root):
 
 def cmd_audit(root):
     own_names, problems, layers, inventory = collect_state(root)
+    print_plugin_freshness(root, problems)
     print("== 台账核对（PROMPT-INSTALL.md）")
     rows = parse_ledger(root)
     if rows is None:
@@ -500,6 +707,29 @@ def cmd_clean(root, yes, force):
         print(f"  DEL     {path}")
         deleted += 1
 
+    stale = stale_minimax_plugins(root)
+    for name, path in stale:
+        if not yes:
+            if not sys.stdin.isatty():
+                print("非交互环境：过期插件副本清理需 --yes（先向用户展示 status 并获同意）")
+                aborted = True
+                break
+            try:
+                ans = input(f"  删除过期插件副本 {path} ? [y/N] ").strip().lower()
+            except EOFError:
+                print("  输入中断，未删除")
+                aborted = True
+                break
+            if ans != "y":
+                print(f"  SKIP    {path}")
+                continue
+        if not os.path.normcase(path).startswith(os.path.normcase(MINIMAX_PLUGINS)):
+            print(f"  SKIP    {path}（非 MiniMax 插件目录，拒绝删除）")
+            continue
+        shutil.rmtree(path)
+        print(f"  DEL     {path}（过期插件副本，link-plugins 可重新生成）")
+        deleted += 1
+
     residual = len(find_duplicates(*scan_layers(), own))
     print()
     if aborted:
@@ -532,12 +762,19 @@ def main(argv=None):
     p_clean.add_argument("--yes", action="store_true", help="跳过逐项确认（先向用户展示 dupes 并获同意）")
     p_clean.add_argument("--force", action="store_true", help="连内容与正本不一致的拷贝一并删除")
     add_root_arg(p_clean)
+    p_lp = sub.add_parser("link-plugins", help="插件分发：Claude/ZCode 市场注册 + MiniMax 物理拷贝")
+    p_lp.add_argument("--agents", default="claude,zcode,minimax",
+                      help="目标 agent，逗号分隔（默认 claude,zcode,minimax）")
+    add_root_arg(p_lp)
     args = ap.parse_args(argv)
 
     root = repo_root(args.root)
     if args.cmd == "link":
         also = {n.strip() for n in args.also.split(",") if n.strip()}
         return cmd_link(root, also, args.prune)
+    if args.cmd == "link-plugins":
+        agents = {a.strip() for a in args.agents.split(",") if a.strip()}
+        return cmd_link_plugins(root, agents)
     if args.cmd == "status":
         return cmd_status(root)
     if args.cmd == "audit":
