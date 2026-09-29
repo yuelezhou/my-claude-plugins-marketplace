@@ -65,11 +65,14 @@ claude plugin marketplace add local .
 
 - **自研 skill** 正本在本仓库 `plugins/<名>/skills/<名>/`，由 skill-distributor 插件分发：`python plugins/skill-distributor/skills/skill-distributor/scripts/skill_distributor.py link`（幂等，兼容入口 `scripts/link_skills.py`）；枢纽里的自研条目永远是链接——改枢纽就是改仓库，新插件建好后重跑 link
 - **第三方 skill** 正本即 `~/.agents/skills/` 安装实体；常用清单在 PROMPT-INSTALL.md（声明式，只记用什么和怎么装，不记安装状态；「哪个装了哪个没装」用 skill-distributor 的 `audit` 子命令核对）
+- **插件层分发**（与 skill 层不同，三范式并存）：`link-plugins` 子命令按矩阵执行——Claude/ZCode 注册市场（本仓库 GitHub 镜像即分发源）、MiniMax 物理拷贝（拒收链接）、其余走 skill 通道；矩阵与依据见 `docs/plugin-compatibility.md`
 - ZCode / MiniMax / OpenCode / DeepSeek Deep Code 原生读枢纽；Claude Code 只认 `~/.claude/skills/`，**链接层禁放与枢纽不同内容的实体**（MiniMax 的 cc 根优先级 40 > agents 根 30，同名异内容会被静默择优）
 - 新机器复现：clone → `python scripts/link_skills.py` → 按 PROMPT-INSTALL.md 补装第三方
 - 术语定义见 CONTEXT.md（自研/第三方、正本、运行时枢纽、复现、漂移、台账）
 
 ## 关键文档（改敏感区前先读）
+
+- `docs/plugin-compatibility.md` — 三平台（Claude/ZCode/MiniMax）插件兼容性矩阵与维护规则
 
 - `plugins/anki-card-from-notes/skills/anki-card-from-notes/references/card-format.md` — Anki 卡片格式契约
 - `plugins/mineru-book-ocr/skills/mineru-book-ocr/references/pipeline-contracts.md` — 五段流水线的输入/输出/验收判据

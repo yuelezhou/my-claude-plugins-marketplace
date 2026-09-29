@@ -22,6 +22,7 @@ python skills/plugin-validator/scripts/check_plugin.py <插件目录> [更多目
 - `.mcp.json` / `hooks/hooks.json` 等 JSON 组件：可解析
 - `scripts/*.py`：UTF-8、语法可编译
 - `marketplace.json`：插件已注册、source 指向本目录、与 plugin.json 的 description 一致
+- MiniMax Code 兼容性：agents 降级提醒、`.mcp.json`/`mcp.json` 双文件一致性、64 skill 上限
 
 ## 退出码
 

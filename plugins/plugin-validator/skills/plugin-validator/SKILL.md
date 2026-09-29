@@ -5,7 +5,8 @@ description: |
   静态校验一个 Claude Code 插件能否被正确加载运行：plugin.json 必填字段与命名、
   skills/*/SKILL.md frontmatter（name 与目录一致、description 可触发）、agents/*.md、
   .mcp.json / hooks.json 等 JSON 组件、scripts/*.py 语法、SKILL.md 引用的相对路径、
-  marketplace.json 注册与两处 description 一致性。
+  marketplace.json 注册与两处 description 一致性，以及 MiniMax Code 兼容性
+  （agents 不支持、mcp.json/.mcp.json 双文件一致性、64 skill 上限）。
   触发：用户说"验证插件 / 发布前检查 / check plugin / 插件能不能正确运行 /
   pre-release 校验"，或本仓库任何插件改完准备提交、发布、打 tag 之前。
   不用于：排查已安装插件的运行时报错（那是 runtime 调试）、评估 skill

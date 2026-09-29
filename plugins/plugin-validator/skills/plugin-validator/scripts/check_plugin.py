@@ -36,6 +36,7 @@ REF_PATH_RE = re.compile(
     r"(?<![\w/\\])((?:references|scripts|data|assets)/[A-Za-z0-9_\-./]+)")
 JSON_COMPONENTS = [
     ".mcp.json",
+    "mcp.json",
     "hooks/hooks.json",
     ".lsp.json",
     "monitors/monitors.json",
@@ -96,38 +97,48 @@ def check_skills(rep, plugin_dir):
         skill_dir = os.path.join(skills_dir, entry)
         if not os.path.isdir(skill_dir):
             continue
-        sm_path = os.path.join(skill_dir, "SKILL.md")
-        if not os.path.isfile(sm_path):
-            rep.error(f"skills/{entry}/ 缺少 SKILL.md")
+        if not os.path.isfile(os.path.join(skill_dir, "SKILL.md")):
+            # 类别目录（嵌套 skills，如 skills/engineering/<名>/SKILL.md）：递归一层
+            sub_skills = [s for s in sorted(os.listdir(skill_dir))
+                          if os.path.isfile(os.path.join(skill_dir, s, "SKILL.md"))]
+            if sub_skills:
+                for s in sub_skills:
+                    _check_one_skill(rep, f"{entry}/{s}", os.path.join(skill_dir, s))
+                continue
+            rep.warn(f"skills/{entry}/ 无有效 skill（归档/类别目录，仅含说明文件）")
             continue
-        try:
-            text = read_text(sm_path)
-        except UnicodeDecodeError as e:
-            rep.error(f"skills/{entry}/SKILL.md 不是 UTF-8: {e}")
-            continue
-        meta = parse_frontmatter(text)
-        if meta is None:
-            rep.error(f"skills/{entry}/SKILL.md 缺少 frontmatter（开头 --- ... ---）")
-            continue
-        sname = meta.get("name")
-        if not sname:
-            rep.error(f"skills/{entry}/SKILL.md frontmatter 缺少 name")
-        elif sname != entry:
-            rep.error(f"skills/{entry}/SKILL.md frontmatter name ({sname}) 与目录名 ({entry}) 不一致")
-        elif not KEBAB_RE.match(sname):
-            rep.warn(f"skill 名 {sname} 不是 kebab-case（小写字母/数字/连字符）")
-        sdesc = str(meta.get("description", "")).strip()
-        if not sdesc:
-            rep.error(f"skills/{entry}/SKILL.md frontmatter 缺少 description")
-        elif len(sdesc) < 30:
-            rep.warn(f"skills/{entry}/SKILL.md description 偏短——它是触发依据，应写清何时用/不用于")
-        body = re.sub(r"\A---.*?---", "", text, count=1, flags=re.S)
-        if len(body.strip()) < 10:
-            rep.warn(f"skills/{entry}/SKILL.md 正文为空")
-        # SKILL.md 提到的相对路径应存在（指向外部或其他 skill 的路径可忽略本警告）
-        for ref in sorted(set(REF_PATH_RE.findall(text))):
-            if not os.path.exists(os.path.join(skill_dir, ref)):
-                rep.warn(f"skills/{entry}/SKILL.md 提到 {ref} 但文件不存在（外部路径/示例可忽略）")
+        _check_one_skill(rep, entry, skill_dir)
+
+
+def _check_one_skill(rep, entry, skill_dir):
+    sm_path = os.path.join(skill_dir, "SKILL.md")
+    try:
+        text = read_text(sm_path)
+    except UnicodeDecodeError as e:
+        rep.error(f"skills/{entry}/SKILL.md 不是 UTF-8: {e}")
+        return
+    meta = parse_frontmatter(text)
+    if meta is None:
+        rep.error(f"skills/{entry}/SKILL.md 缺少 frontmatter（开头 --- ... ---）")
+        return
+    sname = meta.get("name")
+    if not sname:
+        rep.error(f"skills/{entry}/SKILL.md frontmatter 缺少 name")
+    elif sname != os.path.basename(entry):
+        rep.error(f"skills/{entry}/SKILL.md frontmatter name ({sname}) 与目录名 ({os.path.basename(entry)}) 不一致")
+    elif not KEBAB_RE.match(sname):
+        rep.warn(f"skill 名 {sname} 不是 kebab-case（小写字母/数字/连字符）")
+    sdesc = str(meta.get("description", "")).strip()
+    if not sdesc:
+        rep.error(f"skills/{entry}/SKILL.md frontmatter 缺少 description")
+    elif len(sdesc) < 30:
+        rep.warn(f"skills/{entry}/SKILL.md description 偏短——它是触发依据，应写清何时用/不用于")
+    body = re.sub(r"\A---.*?---", "", text, count=1, flags=re.S)
+    if len(body.strip()) < 10:
+        rep.warn(f"skills/{entry}/SKILL.md 正文为空")
+    for ref in sorted(set(REF_PATH_RE.findall(text))):
+        if not os.path.exists(os.path.join(skill_dir, ref)):
+            rep.warn(f"skills/{entry}/SKILL.md 提到 {ref} 但文件不存在（外部路径/示例可忽略）")
 
 
 def check_agents(rep, plugin_dir):
@@ -244,6 +255,48 @@ def check_marketplace(rep, plugin_dir, pj, standalone):
         rep.warn("plugin.json 与 marketplace.json 的 description 不一致（两处需人工同步）")
 
 
+def check_minimax_compat(rep, plugin_dir):
+    """MiniMax Code (mcode 0.4.0+) 兼容性检查。
+
+    依据 MiniMax-Code-Plugins docs/plugin-compatibility.md：
+    支持 skills 与 MCP（mcp.json）；不支持自定义 agents/commands/LSP；
+    每插件上限 64 个 skill、8 个 MCP 服务器；0.4.0+ 忽略根目录 plugin.json。
+    """
+    agents_dir = os.path.join(plugin_dir, "agents")
+    if os.path.isdir(agents_dir) and any(f.endswith(".md") for f in os.listdir(agents_dir)):
+        rep.warn("agents/ 自定义 agent 在 MiniMax Code 不支持（该组件在 Claude/ZCode 仍可用）")
+
+    dot_mcp = os.path.join(plugin_dir, ".mcp.json")
+    plain_mcp = os.path.join(plugin_dir, "mcp.json")
+    if os.path.isfile(plain_mcp) and not os.path.isfile(dot_mcp):
+        rep.warn("存在 mcp.json 但缺 .mcp.json——Claude/ZCode 读不到 MCP 配置（MiniMax 读 mcp.json）")
+    if os.path.isfile(dot_mcp) and os.path.isfile(plain_mcp):
+        try:
+            if json.loads(read_text(dot_mcp)) != json.loads(read_text(plain_mcp)):
+                rep.error(".mcp.json 与 mcp.json 内容不一致——双份 MCP 配置已漂移")
+        except json.JSONDecodeError:
+            pass  # JSON 合法性已在组件检查中报告
+
+    if os.path.isfile(os.path.join(plugin_dir, "plugin.json")):
+        rep.warn("根目录 plugin.json 与 .claude-plugin 并存：mcode 0.4.0+ 忽略根 plugin.json（0.3.x 便携格式残留）")
+
+    skills_dir = os.path.join(plugin_dir, "skills")
+    if os.path.isdir(skills_dir):
+        n = sum(1 for e in os.listdir(skills_dir)
+                if os.path.isfile(os.path.join(skills_dir, e, "SKILL.md")))
+        if n > 64:
+            rep.error(f"skills 数量 {n} 超过 MiniMax 上限 64")
+    for rel in (".mcp.json", "mcp.json"):
+        p = os.path.join(plugin_dir, rel)
+        if os.path.isfile(p):
+            try:
+                servers = json.loads(read_text(p)).get("mcpServers", {})
+                if isinstance(servers, dict) and len(servers) > 8:
+                    rep.warn(f"{rel} 含 {len(servers)} 个 MCP 服务器，超过 MiniMax 上限 8")
+            except (json.JSONDecodeError, UnicodeDecodeError, AttributeError):
+                pass
+
+
 def check_plugin_dir(plugin_dir, standalone=False):
     plugin_dir = os.path.abspath(plugin_dir)
     rep = Report()
@@ -286,6 +339,7 @@ def check_plugin_dir(plugin_dir, standalone=False):
     check_agents(rep, plugin_dir)
     check_json_components(rep, plugin_dir)
     check_python_scripts(rep, plugin_dir)
+    check_minimax_compat(rep, plugin_dir)
     if not os.path.isfile(os.path.join(plugin_dir, "README.md")):
         rep.warn("缺少 README.md（建议补一份插件说明）")
     check_marketplace(rep, plugin_dir, pj, standalone)
