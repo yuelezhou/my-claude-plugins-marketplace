@@ -65,7 +65,8 @@ claude plugin install https://github.com/username/my_claude_code_market --plugin
 
 | 目录/文件 | 作用 | 必需 |
 |-----------|------|------|
-| `.claude-plugin/plugin.json` | 插件元数据 | ✅ |
+| `.claude-plugin/plugin.json` | 插件元数据（Claude/ZCode/MiniMax 形态） | ✅ |
+| `plugin.json`（根目录） | Agent Plugins 1.0 便携清单（`$schema`+`name`+`version`，字段不复制防漂移） | ✅ |
 | `skills/*/SKILL.md` | Agent Skills | ❌ |
 | `agents/*.md` | 自定义代理 | ❌ |
 | `commands/*.md` | Slash 命令 | ❌ |
@@ -84,12 +85,21 @@ claude plugin install https://github.com/username/my_claude_code_market --plugin
    mkdir -p plugins/my-new-plugin/.claude-plugin
    ```
 
-2. 创建 `plugin.json`：
+2. 创建清单（两份）——`.claude-plugin/plugin.json`（完整元数据）+ 根目录 `plugin.json`（Agent Plugins 1.0 最小集）：
    ```json
+   // .claude-plugin/plugin.json
    {
      "name": "my-new-plugin",
      "version": "1.0.0",
      "description": "我的新插件"
+   }
+   ```
+   ```json
+   // plugin.json（根目录）
+   {
+     "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
+     "name": "my-new-plugin",
+     "version": "1.0.0"
    }
    ```
 
@@ -102,9 +112,11 @@ claude plugin install https://github.com/username/my_claude_code_market --plugin
    python plugins/plugin-validator/skills/plugin-validator/scripts/check_plugin.py plugins/my-new-plugin
    ```
 
-6. 分发 skill 到各 agent（ZCode/MiniMax/OpenCode/Deep Code 读枢纽，Claude Code 走链接层）：
+6. 分发到各 agent：
    ```bash
-   python scripts/link_skills.py
+   python scripts/link_skills.py                       # skill 层：junction 进枢纽 + Claude 链接层
+   python plugins/skill-distributor/skills/skill-distributor/scripts/skill_distributor.py link-plugins
+                                                      # 插件层：Claude/ZCode 市场注册 + MiniMax 拷贝
    ```
 
 7. 提交更改：

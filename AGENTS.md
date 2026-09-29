@@ -4,9 +4,10 @@
 
 ## 仓库结构
 
-- `.claude-plugin/marketplace.json` — 市场注册表：每个插件一条 `{name, description, source}`，`source` 指向 `./plugins/<name>`
+- `.claude-plugin/marketplace.json` — 市场注册表：每个插件一条 `{name, description, source}`，`source` 指向 `./plugins/<name>`（另含外部聚合条目，source 为 github 形式 + metadata.pinnedSha）
 - `plugins/<插件名>/` — 每个插件自包含：
   - `.claude-plugin/plugin.json` — 必需元数据（name / version / description / author）
+  - `plugin.json`（根目录）— Agent Plugins 1.0 便携清单（`$schema` + `name` + `version` 最小集），与 `.claude-plugin` 清单的一致性由 validator 强制
   - `skills/<skill-name>/SKILL.md` — Agent Skill 入口；frontmatter 的 `name` + `description` 决定触发时机（description 要写清触发短语和「不用于」的排除场景）
   - `skills/<skill-name>/references/` — 详细契约/排查文档；SKILL.md 只放执行规则，细节放这里
   - `skills/<skill-name>/scripts/` — Python 辅助脚本
@@ -22,7 +23,8 @@
 | anki-card-from-notes | 笔记 → markdown_sync_to_anki 格式 Anki 卡片 |
 | mineru-book-ocr | 书籍 PDF → MinerU 云端 OCR → 读书笔记流水线（拆分→提交→等待→收集→归档） |
 | word-frequency | 英文词频统计，HTML / Anki / CSV 输出，自带词典数据 |
-| skill-distributor | 本地 skill 分发与台账核对（link / status / audit / dupes / clean） |
+| skill-distributor | 本地 skill 分发与台账核对（link / status / audit / dupes / clean / link-plugins） |
+| **mattpocock-skills**（外部） | 聚合条目，github: mattpocock/skills，pin main `484efcbe`——本地无源码 |
 | gitee-mcp | Gitee 云端 Remote MCP 封装（`.mcp.json`，需 `GITEE_ACCESS_TOKEN` 环境变量） |
 | plugin-validator | **其他插件发布前必须运行的验证工具**（`check_plugin.py`，0 error 才能发布） |
 | obsidian-skills | 外部插件（github: kepano/obsidian-skills），本地无源码 |
@@ -45,8 +47,8 @@ claude plugin marketplace add local .
 
 ## 添加 / 修改插件的规则
 
-1. 新增插件：建 `plugins/<name>/.claude-plugin/plugin.json` + 组件，**必须同步在 `.claude-plugin/marketplace.json` 的 `plugins` 数组加一条**——漏了市场里看不到
-2. 改版本号或 description 时，`plugin.json` 与 `marketplace.json` 两处保持一致（曾出现两处漂移，靠提交人工同步）
+1. 新增插件：建 `plugins/<name>/.claude-plugin/plugin.json` + **根目录 `plugin.json`**（Agent Plugins 1.0：`$schema`+`name`+`version`）+ 组件，**必须同步在 `.claude-plugin/marketplace.json` 的 `plugins` 数组加一条**——漏了市场里看不到
+2. 改版本号时**三处同步**：`.claude-plugin/plugin.json`、根 `plugin.json`、marketplace.json 条目；description 两处同步（`.claude-plugin` 与 marketplace），以 plugin.json 为准（曾出现两处漂移，validator 会拦）
 3. **任何插件提交/发布前，先用 plugin-validator 插件的 `check_plugin.py` 校验，0 error 才能交付**（warning 逐条人工确认）
 4. SKILL.md 的 frontmatter `description` 是触发依据：写明「何时用 / 何时不用」，相邻 skill 的边界要显式划清（参照 anki-card-from-notes 的写法）
 5. skill 自带 Python 脚本时，配套的输入输出契约写进 `references/`，SKILL.md 里给速查表和「先看后写」的执行规则即可
