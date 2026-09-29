@@ -255,6 +255,30 @@ def check_marketplace(rep, plugin_dir, pj, standalone):
         rep.warn("plugin.json 与 marketplace.json 的 description 不一致（两处需人工同步）")
 
 
+def check_agent_plugins_spec(rep, plugin_dir, pj):
+    """Agent Plugins 1.0（agent-plugins.org）便携清单一致性：根 plugin.json。"""
+    root_pj = os.path.join(plugin_dir, "plugin.json")
+    schema = "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json"
+    if not os.path.isfile(root_pj):
+        rep.error("缺少根目录 plugin.json（Agent Plugins 1.0 便携清单：$schema+name+version）")
+        return
+    try:
+        data = json.loads(read_text(root_pj))
+    except (json.JSONDecodeError, UnicodeDecodeError) as e:
+        rep.error(f"根目录 plugin.json 不是合法 JSON: {e}")
+        return
+    if data.get("$schema") != schema:
+        rep.error(f"根 plugin.json $schema 应为 {schema}，实际 {data.get('$schema')}")
+    if data.get("name") != pj.get("name"):
+        rep.error(f"根 plugin.json name ({data.get('name')}) 与 .claude-plugin 清单 name ({pj.get('name')}) 不一致")
+    if data.get("version") != pj.get("version"):
+        rep.warn(f"根 plugin.json version ({data.get('version')}) 与 .claude-plugin 清单 version ({pj.get('version')}) 不一致")
+    extra = set(data) - {"$schema", "name", "version", "description", "author",
+                         "homepage", "repository", "license", "keywords", "extensions"}
+    if extra:
+        rep.warn(f"根 plugin.json 含规范外字段: {', '.join(sorted(extra))}")
+
+
 def check_minimax_compat(rep, plugin_dir):
     """MiniMax Code (mcode 0.4.0+) 兼容性检查。
 
@@ -278,7 +302,7 @@ def check_minimax_compat(rep, plugin_dir):
             pass  # JSON 合法性已在组件检查中报告
 
     if os.path.isfile(os.path.join(plugin_dir, "plugin.json")):
-        rep.warn("根目录 plugin.json 与 .claude-plugin 并存：mcode 0.4.0+ 忽略根 plugin.json（0.3.x 便携格式残留）")
+        pass  # 根 plugin.json = Agent Plugins 1.0 便携清单（本仓库政策要求存在），由 check_agent_plugins_spec 校验
 
     skills_dir = os.path.join(plugin_dir, "skills")
     if os.path.isdir(skills_dir):
@@ -340,6 +364,7 @@ def check_plugin_dir(plugin_dir, standalone=False):
     check_json_components(rep, plugin_dir)
     check_python_scripts(rep, plugin_dir)
     check_minimax_compat(rep, plugin_dir)
+    check_agent_plugins_spec(rep, plugin_dir, pj)
     if not os.path.isfile(os.path.join(plugin_dir, "README.md")):
         rep.warn("缺少 README.md（建议补一份插件说明）")
     check_marketplace(rep, plugin_dir, pj, standalone)

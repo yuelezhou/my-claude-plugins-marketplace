@@ -49,6 +49,10 @@
 
 由 skill-distributor 的 `link-plugins` 子命令统一执行（`status`/`audit` 报告 MiniMax 副本新鲜度，`clean` 可删过期副本）。
 
+## Agent Plugins 1.0 规范符合（agent-plugins.org）
+
+本仓库插件**符合 [Agent Plugins 1.0](https://agent-plugins.org/specification)**：每个插件根目录带便携清单 `plugin.json`（`$schema` + `name` + `version` 最小集，字段不复制——与 `.claude-plugin/plugin.json` 的同步由 plugin-validator 强制校验）。组件面天然合规（skills + 根目录 `mcp.json`；`agents/` 属规范外组件，客户端按规范忽略）。注意：mcode 0.4.0+ 会忽略根 plugin.json 优先读 `.claude-plugin/`——两份清单服务不同生态，均为有意保留。
+
 ## 外部聚合插件（引用式 + pin SHA）
 
 | 插件 | 上游 | pin | 三平台 |
