@@ -1,0 +1,21 @@
+{
+  "schemaVersion": 1,
+  "name": "demo-case",
+  "displayName": "演示工具集",
+  "version": "1.0.0",
+  "description": "演示插件集合：包含快速部署与代码清理两个日常工作流技能，以及一个调试辅助自定义 agent。",
+  "author": "yuelezhou",
+  "icon": "icon.png",
+  "darkIcon": "icon-dark.png",
+  "category": "Productivity",
+  "exampleQueries": [
+    "帮我清理一下这段代码，去掉无用导入和冗余注释",
+    "把这个项目快速部署上线"
+  ],
+  "apps": [],
+  "mcpServers": [],
+  "skills": [
+    "skills/code-clean/SKILL.md",
+    "skills/quick-deploy/SKILL.md"
+  ]
+}

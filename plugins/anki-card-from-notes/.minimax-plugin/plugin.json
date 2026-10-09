@@ -1,0 +1,20 @@
+{
+  "schemaVersion": 1,
+  "name": "anki-card-from-notes",
+  "displayName": "笔记转 Anki 卡片",
+  "version": "1.0.0",
+  "description": "把笔记、书摘、讲义转成 markdown_sync_to_anki 格式的 Anki 卡片，含完整格式契约、校验脚本与常见问题排查指南。",
+  "author": "yuelezhou",
+  "icon": "icon.png",
+  "darkIcon": "icon-dark.png",
+  "category": "Education",
+  "exampleQueries": [
+    "把这份读书笔记转成 Anki 卡片",
+    "帮我把讲义整理成 Anki 卡片并校验格式是否合规"
+  ],
+  "apps": [],
+  "mcpServers": [],
+  "skills": [
+    "skills/anki-card-from-notes/SKILL.md"
+  ]
+}

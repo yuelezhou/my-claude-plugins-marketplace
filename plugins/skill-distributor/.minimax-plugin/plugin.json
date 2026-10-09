@@ -1,0 +1,20 @@
+{
+  "schemaVersion": 1,
+  "name": "skill-distributor",
+  "displayName": "Skill 分发与台账核对",
+  "version": "1.0.0",
+  "description": "本地 skill 分发与台账核对工具：把自研 skill 以链接分发进各运行时枢纽，检测同名多拷贝漂移与悬空链接，并按矩阵管理插件在 Claude Code、ZCode、MiniMax 之间的分发。",
+  "author": "yuelezhou",
+  "icon": "icon.png",
+  "darkIcon": "icon-dark.png",
+  "category": "Code",
+  "exampleQueries": [
+    "核对一下本地 skill 装了哪些、哪些没装",
+    "把新插件分发给 Claude Code 和 MiniMax Code"
+  ],
+  "apps": [],
+  "mcpServers": [],
+  "skills": [
+    "skills/skill-distributor/SKILL.md"
+  ]
+}

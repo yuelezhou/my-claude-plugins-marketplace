@@ -1,0 +1,20 @@
+{
+  "schemaVersion": 1,
+  "name": "plugin-validator",
+  "displayName": "插件发布验证器",
+  "version": "1.0.0",
+  "description": "插件发布前的验证工具：静态校验 plugin.json 必填字段与命名、SKILL.md frontmatter、市场注册、脚本语法与各组件 JSON，确认插件能被正确加载运行。",
+  "author": "yuelezhou",
+  "icon": "icon.png",
+  "darkIcon": "icon-dark.png",
+  "category": "Code",
+  "exampleQueries": [
+    "提交前先校验一下这个插件有没有问题",
+    "检查这个插件的清单和技能描述是否合规"
+  ],
+  "apps": [],
+  "mcpServers": [],
+  "skills": [
+    "skills/plugin-validator/SKILL.md"
+  ]
+}

@@ -1,0 +1,20 @@
+{
+  "schemaVersion": 1,
+  "name": "mineru-book-ocr",
+  "displayName": "书籍 OCR 与读书笔记流水线",
+  "version": "1.0.0",
+  "description": "书籍 PDF 按 200 页拆分、驱动 MinerU 桌面版批量提交云端解析、收集产物、合并拆章归档成读书笔记，并生成导读与 Anki 卡片。",
+  "author": "yuelezhou",
+  "icon": "icon.png",
+  "darkIcon": "icon-dark.png",
+  "category": "Productivity",
+  "exampleQueries": [
+    "把这本 PDF 拆开并用 MinerU 解析成读书笔记",
+    "把 MinerU 解析好的书籍归档成章节笔记并生成 Anki 卡片"
+  ],
+  "apps": [],
+  "mcpServers": [],
+  "skills": [
+    "skills/mineru-book-ocr/SKILL.md"
+  ]
+}

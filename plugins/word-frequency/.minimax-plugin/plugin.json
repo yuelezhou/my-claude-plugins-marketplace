@@ -1,0 +1,20 @@
+{
+  "schemaVersion": 1,
+  "name": "word-frequency",
+  "displayName": "英语词频统计",
+  "version": "1.1.0",
+  "description": "统计 txt / markdown / 非扫描版 PDF 英语材料的词频，标注专四专八 CET 考研雅思托福 GRE 等级与 COCA 词频排名，识别词典词组，生成 HTML 交互报告、Anki 导入文件与 CSV。",
+  "author": "yuelezhou",
+  "icon": "icon.png",
+  "darkIcon": "icon-dark.png",
+  "category": "Education",
+  "exampleQueries": [
+    "统计这份 txt 的词频并生成 HTML 交互报告",
+    "把统计出来的生词整理成 Anki 导入文件"
+  ],
+  "apps": [],
+  "mcpServers": [],
+  "skills": [
+    "skills/word-frequency/SKILL.md"
+  ]
+}

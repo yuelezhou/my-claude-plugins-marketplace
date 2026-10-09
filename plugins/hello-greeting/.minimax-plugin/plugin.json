@@ -1,0 +1,20 @@
+{
+  "schemaVersion": 1,
+  "name": "hello-greeting",
+  "displayName": "多语言问候",
+  "version": "1.0.0",
+  "description": "演示插件：提供多语言问候技能，可用于验证插件安装与技能触发是否正常。",
+  "author": "yuelezhou",
+  "icon": "icon.png",
+  "darkIcon": "icon-dark.png",
+  "category": "Other",
+  "exampleQueries": [
+    "打个招呼",
+    "用日语和法语各问候一次"
+  ],
+  "apps": [],
+  "mcpServers": [],
+  "skills": [
+    "skills/greeting/SKILL.md"
+  ]
+}
