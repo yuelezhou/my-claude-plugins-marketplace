@@ -4,20 +4,30 @@
 
 ## 组件支持矩阵
 
-| 组件 | Claude Code | ZCode | MiniMax Code (mcode 0.4.0+) |
+| 组件 | Claude Code | ZCode | MiniMax Code Desktop |
 |---|---|---|---|
-| skills/（SKILL.md） | ✅ | ✅ | ✅（frontmatter name 须与目录一致，≤64 字符；每插件 ≤64 个） |
+| skills/（SKILL.md） | ✅ | ✅ | ✅ 自动扫描 `skills/*/SKILL.md`（frontmatter name 须与目录一致，≤64 字符；每插件 ≤64 个） |
 | 自定义 agents/ | ✅ | ✅ | ❌ 不支持（静默不可用） |
 | commands/ | ✅ | ✅ | ❌ 不支持 |
-| hooks | ✅ hooks/hooks.json | ✅（本机样例未见，待验证） | ⚠️ 仅 0.4.0+ 内联在清单的 `hooks` 字段（12 个事件） |
-| MCP | ✅ `.mcp.json` 或清单 `mcpServers`（≤ 建议上限无） | ✅ `.mcp.json` | ✅ 根目录 `mcp.json`（≤8 服务器；stdio / streamable-http / sse） |
+| hooks | ✅ hooks/hooks.json | ✅（本机样例未见，待验证） | ✅ 内联在 `.minimax-plugin` 清单的 `hooks` 字段 |
+| MCP | ✅ `.mcp.json` | ✅ `.mcp.json` | ✅ `mcp.json`（≤8 服务器；stdio / streamable-http / sse） |
 | LSP | ✅ `.lsp.json` | 待验证 | ❌ |
-| 市场清单 | ✅ `.claude-plugin/marketplace.json` | ✅ 原生读取 Claude 格式（兼容层已证实） | ❌ 无市场清单概念——社区仓库按 `plugins/<owner>/<name>/` 一文件夹一发布 |
+| 市场清单 | ✅ `.claude-plugin/marketplace.json` | ✅ 原生读取 Claude 格式（兼容层已证实） | ⚠️ 桌面端有「从 Git 仓库导入」（公开 git 仓库 + GitHub 子目录，不经审核）；托管市场走飞书表单提交 |
 
-## 清单形态规则（MiniMax）
+## 清单形态规则（MiniMax Code Desktop）
 
-- **mcode 0.4.0+（首选）**：`.claude-plugin/plugin.json`——与 Claude Code 完全同形；根目录 `plugin.json` 会被忽略
-- mcode 0.3.x 便携格式：根目录 `plugin.json` + `$schema: agent-plugins.org`——本仓库**不支持**（并行发布是双倍维护）
+运行时探测顺序（依据 Desktop `app.asar` 内 `detectLocalPluginPackage`）：
+
+1. 根目录 `plugin.json`（Agent Plugins 1.0）——**仅当被该读取器完整接受时上位**；非法或畸形则自动穿透，不遮蔽后续清单
+2. `.minimax-plugin/plugin.json`（MiniMax Plugin V1）
+3. `.claude-plugin/plugin.json`（兼容 vendor 方言，源码中以 unicode 转义书写）
+4. `.codex-plugin/plugin.json`
+
+> 关键推论：根 `plugin.json` 合法时会压过 `.minimax-plugin/`，使 MiniMax 的 `icon`/`category`/`exampleQueries` 全部失效——Agent Plugins 1.0 路径下这三项被运行时硬编码为 `category: 'Other'`、`exampleQueries: []`、`displayName: name`。**本仓库已统一删除根 `plugin.json`**，只保留 `.minimax-plugin/`。
+
+- MiniMax V1 清单字段为**封闭集**：`$schema`/`schemaVersion`/`name`/`displayName`/`version`/`description`/`author`/`icon`/`darkIcon`/`category`/`exampleQueries`/`apps`/`mcpServers`/`skills`/`hooks`/`hostBindings`，多一个字段即拒
+- `apps` 必须为 `[]`；`icon` 必填且需实际存在；`category` 取自固定 10 项枚举
+- MCP 方言：`.mcp.json` 用 `type: "http"`（Claude Code 习惯），`mcp.json` 用 `type: "streamable-http"`（V1 唯一接受的 http 类传输）
 - 保留环境变量：`PLUGIN_ROOT`、`PLUGIN_DATA` 不可自行设置；勿在环境值/headers 中内嵌 token
 
 ## 本项目逐插件状态
@@ -30,13 +40,14 @@
 | plugin-validator | ✅ | ✅ | ✅ 纯 skills | |
 | hello-greeting | ✅ | ✅ | ✅ 纯 skills | |
 | demo-case | ✅ | ✅ | ⚠️ 部分 | debug-helper agent 在 MiniMax 不可用（演示插件，接受降级） |
-| gitee-mcp | ✅ 读 `.mcp.json` | ✅ 读 `.mcp.json` | ✅ 读根目录 `mcp.json` | **双 MCP 文件必须保持一致**，validator 强制校验；`${GITEE_ACCESS_TOKEN}` 在 MiniMax 侧的展开未验证 |
+| gitee-mcp | ✅ 读 `.mcp.json` | ✅ 读 `.mcp.json` | ✅ 读 `mcp.json` | **两份 MCP 文件方言不同**（`.mcp.json` = `type:http` 给 Claude Code；`mcp.json` = `schemaVersion:1` + `type:streamable-http` 给 MiniMax）。validator 强制校验两者**服务器集合与 url 一致**，transport 差异只告警；`${GITEE_ACCESS_TOKEN}` 在 MiniMax 侧的展开未验证 |
 
 ## 维护规则
 
 1. 新增组件前先查本矩阵；MiniMax 不支持的组件只做「Claude/ZCode 可用 + 注明降级」
-2. gitee-mcp 改 MCP 配置时，`.mcp.json` 与 `mcp.json` **同步改**，跑 plugin-validator 会校验一致性
-3. 本矩阵有误或平台规则变更时直接更新本文件并改 ADR 引用（分发架构见 ADR-0001）
+2. gitee-mcp 改 MCP 配置时，`.mcp.json` 与 `mcp.json` **都要改**（各自保持本客户端方言），但服务器名与 url 必须相同；跑 plugin-validator 会校验
+3. **不要新增根目录 `plugin.json`**——它会压过 `.minimax-plugin/` 使 MiniMax 元数据失效
+4. 本矩阵有误或平台规则变更时直接更新本文件并改 ADR 引用（分发架构见 ADR-0001）
 
 ## 插件分发矩阵（plugin 层，与 skill 层 junction 机制区分）
 
@@ -49,9 +60,16 @@
 
 由 skill-distributor 的 `link-plugins` 子命令统一执行（`status`/`audit` 报告 MiniMax 副本新鲜度，`clean` 可删过期副本）。
 
-## Agent Plugins 1.0 规范符合（agent-plugins.org）
+## 目标标准与落地格式
 
-本仓库插件**符合 [Agent Plugins 1.0](https://agent-plugins.org/specification)**：每个插件根目录带便携清单 `plugin.json`（`$schema` + `name` + `version` 最小集，字段不复制——与 `.claude-plugin/plugin.json` 的同步由 plugin-validator 强制校验）。组件面天然合规（skills + 根目录 `mcp.json`；`agents/` 属规范外组件，客户端按规范忽略）。注意：mcode 0.4.0+ 会忽略根 plugin.json 优先读 `.claude-plugin/`——两份清单服务不同生态，均为有意保留。
+本仓库同时服务两端，清单按目标各写一份，**不做 Agent Plugins 1.0 便携格式**：
+
+| 目标 | 清单 | 位置 |
+|---|---|---|
+| Claude Code / ZCode | Claude Code 插件清单 | `.claude-plugin/plugin.json` |
+| MiniMax Code | MiniMax Plugin V1 清单 | `.minimax-plugin/plugin.json` |
+
+取舍依据：Agent Plugins 1.0 虽是跨端标准，但 MiniMax 运行时在该路径下把 `displayName` 强制为 `name`、`category` 硬编码为 `Other`、`exampleQueries` 固定为空——插件在市场/插件面板里没有任何元数据。改用 `.minimax-plugin/` 后图标、分类、示例查询才全部生效。放弃的代价是失去 agent-plugins.org 生态的自动发现，需要跨端的第三方客户端需自行补一份根 `plugin.json`（但注意：在本仓库形态下补回会让 MiniMax 侧元数据再次失效）。
 
 ## 外部聚合插件（引用式 + pin SHA）
 

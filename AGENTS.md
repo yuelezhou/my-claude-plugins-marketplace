@@ -7,7 +7,10 @@
 - `.claude-plugin/marketplace.json` — 市场注册表：每个插件一条 `{name, description, source}`，`source` 指向 `./plugins/<name>`（另含外部聚合条目，source 为 github 形式 + metadata.pinnedSha）
 - `plugins/<插件名>/` — 每个插件自包含：
   - `.claude-plugin/plugin.json` — 必需元数据（name / version / description / author）
-  - `plugin.json`（根目录）— Agent Plugins 1.0 便携清单（`$schema` + `name` + `version` 最小集），与 `.claude-plugin` 清单的一致性由 validator 强制
+  - `.minimax-plugin/plugin.json` — MiniMax Plugin V1 入口清单（`schemaVersion`/`name`/`displayName`/`version`/`description`/`author`/`icon`/`category`/`exampleQueries`/`apps`/`mcpServers`/`skills`，封闭字段集）；与 `.claude-plugin` 清单的 name/version 一致性由 validator 强制
+  - `icon.png`、`icon-dark.png` — MiniMax 清单的 `icon`/`darkIcon` 必填引用（明暗成对）
+  - `mcp.json` — MiniMax 方言的 MCP 配置（`schemaVersion` + `streamable-http`/`sse`/`stdio`），由 `.minimax-plugin` 的 `mcpServers` 数组引用
+  - 根目录 `plugin.json`（Agent Plugins 1.0 便携清单）**本仓库已不再使用**：MiniMax 运行时只有在它通过 Agent Plugins 1.0 完整校验时才优先于 `.minimax-plugin/`，一旦存在就会压掉 MiniMax 的图标/分类/示例查询
   - `skills/<skill-name>/SKILL.md` — Agent Skill 入口；frontmatter 的 `name` + `description` 决定触发时机（description 要写清触发短语和「不用于」的排除场景）
   - `skills/<skill-name>/references/` — 详细契约/排查文档；SKILL.md 只放执行规则，细节放这里
   - `skills/<skill-name>/scripts/` — Python 辅助脚本
@@ -25,7 +28,7 @@
 | word-frequency | 英文词频统计，HTML / Anki / CSV 输出，自带词典数据 |
 | skill-distributor | 本地 skill 分发与台账核对（link / status / audit / dupes / clean / link-plugins） |
 | **mattpocock-skills**（外部） | 聚合条目，github: mattpocock/skills，pin main `484efcbe`——本地无源码 |
-| gitee-mcp | Gitee 云端 Remote MCP 封装（`.mcp.json`，需 `GITEE_ACCESS_TOKEN` 环境变量） |
+| gitee-mcp | Gitee 云端 Remote MCP 封装（`.mcp.json` 给 Claude Code / `mcp.json` 给 MiniMax，需 `GITEE_ACCESS_TOKEN` 环境变量） |
 | plugin-validator | **其他插件发布前必须运行的验证工具**（`check_plugin.py`，0 error 才能发布） |
 | obsidian-skills | 外部插件（github: kepano/obsidian-skills），本地无源码 |
 
@@ -47,11 +50,12 @@ claude plugin marketplace add local .
 
 ## 添加 / 修改插件的规则
 
-1. 新增插件：建 `plugins/<name>/.claude-plugin/plugin.json` + **根目录 `plugin.json`**（Agent Plugins 1.0：`$schema`+`name`+`version`）+ 组件，**必须同步在 `.claude-plugin/marketplace.json` 的 `plugins` 数组加一条**——漏了市场里看不到
-2. 改版本号时**三处同步**：`.claude-plugin/plugin.json`、根 `plugin.json`、marketplace.json 条目；description 两处同步（`.claude-plugin` 与 marketplace），以 plugin.json 为准（曾出现两处漂移，validator 会拦）
-3. **任何插件提交/发布前，先用 plugin-validator 插件的 `check_plugin.py` 校验，0 error 才能交付**（warning 逐条人工确认）
-4. SKILL.md 的 frontmatter `description` 是触发依据：写明「何时用 / 何时不用」，相邻 skill 的边界要显式划清（参照 anki-card-from-notes 的写法）
-5. skill 自带 Python 脚本时，配套的输入输出契约写进 `references/`，SKILL.md 里给速查表和「先看后写」的执行规则即可
+1. 新增插件：建 `plugins/<name>/.claude-plugin/plugin.json`（Claude Code）+ **`.minimax-plugin/plugin.json`（MiniMax Plugin V1）** + `icon.png`/`icon-dark.png` + 组件，**必须同步在 `.claude-plugin/marketplace.json` 的 `plugins` 数组加一条**——漏了市场里看不到
+2. 改版本号时**两处同步**：`.claude-plugin/plugin.json` 与 `.minimax-plugin/plugin.json`；description 同步（`.claude-plugin` 与 marketplace），以 `.claude-plugin` 为准（曾出现两处漂移，validator 会拦）
+3. **不要新建根目录 `plugin.json`**：它会通过 Agent Plugins 1.0 校验并压过 `.minimax-plugin/`，导致 MiniMax 侧图标/分类/示例查询全部失效（validator 会警告）
+4. **任何插件提交/发布前，先用 plugin-validator 插件的 `check_plugin.py` 校验，0 error 才能交付**（warning 逐条人工确认）
+5. SKILL.md 的 frontmatter `description` 是触发依据：写明「何时用 / 何时不用」，相邻 skill 的边界要显式划清（参照 anki-card-from-notes 的写法）
+6. skill 自带 Python 脚本时，配套的输入输出契约写进 `references/`，SKILL.md 里给速查表和「先看后写」的执行规则即可
 
 ## Windows / Python 约定
 

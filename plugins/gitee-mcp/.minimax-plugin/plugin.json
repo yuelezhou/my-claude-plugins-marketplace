@@ -1,0 +1,20 @@
+{
+  "schemaVersion": 1,
+  "name": "gitee-mcp",
+  "displayName": "Gitee MCP",
+  "version": "1.0.0",
+  "description": "Gitee 官方 MCP Server 的插件封装：走 Gitee 云端 Remote MCP，免安装，AI 可直接读写仓库、文件、Issue、Pull Request、发行版与通知。需自行配置 GITEE_ACCESS_TOKEN 环境变量。",
+  "author": "yuelezhou",
+  "icon": "icon.png",
+  "darkIcon": "icon-dark.png",
+  "category": "Code",
+  "exampleQueries": [
+    "列出我 Gitee 上最近更新的 Issue",
+    "帮我在 Gitee 提一个 Issue 并附上当前改动说明"
+  ],
+  "apps": [],
+  "mcpServers": [
+    "mcp.json"
+  ],
+  "skills": []
+}

@@ -1,12 +1,12 @@
 {
+  "schemaVersion": 1,
   "mcpServers": {
     "gitee": {
-      "type": "http",
+      "type": "streamable-http",
       "url": "https://api.gitee.com/mcp",
       "headers": {
         "Authorization": "Bearer ${GITEE_ACCESS_TOKEN}"
-      },
-      "alwaysLoad": true
+      }
     }
   }
 }

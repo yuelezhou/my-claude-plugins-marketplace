@@ -82,10 +82,10 @@ claude plugin install https://github.com/username/my_claude_code_market --plugin
 
 1. 创建插件目录：
    ```bash
-   mkdir -p plugins/my-new-plugin/.claude-plugin
+   mkdir -p plugins/my-new-plugin/.claude-plugin plugins/my-new-plugin/.minimax-plugin
    ```
 
-2. 创建清单（两份）——`.claude-plugin/plugin.json`（完整元数据）+ 根目录 `plugin.json`（Agent Plugins 1.0 最小集）：
+2. 创建清单（两份）——`.claude-plugin/plugin.json`（Claude Code / ZCode）+ `.minimax-plugin/plugin.json`（MiniMax Plugin V1），另需 `icon.png` 与 `icon-dark.png`：
    ```json
    // .claude-plugin/plugin.json
    {
@@ -95,13 +95,25 @@ claude plugin install https://github.com/username/my_claude_code_market --plugin
    }
    ```
    ```json
-   // plugin.json（根目录）
+   // .minimax-plugin/plugin.json
    {
-     "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
+     "schemaVersion": 1,
      "name": "my-new-plugin",
-     "version": "1.0.0"
+     "displayName": "我的新插件",
+     "version": "1.0.0",
+     "description": "我的新插件",
+     "author": "yuelezhou",
+     "icon": "icon.png",
+     "darkIcon": "icon-dark.png",
+     "category": "Other",
+     "exampleQueries": ["用我的新插件做一件事"],
+     "apps": [],
+     "mcpServers": [],
+     "skills": ["skills/my-new-plugin/SKILL.md"]
    }
    ```
+
+   > 不要额外创建根目录 `plugin.json`：它会通过 Agent Plugins 1.0 校验并压过 `.minimax-plugin/`，使 MiniMax 侧的图标、分类、示例查询全部失效。字段集为封闭集，多写一个字段即被拒。
 
 3. 添加技能、代理等组件
 

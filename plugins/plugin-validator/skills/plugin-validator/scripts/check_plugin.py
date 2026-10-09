@@ -255,36 +255,123 @@ def check_marketplace(rep, plugin_dir, pj, standalone):
         rep.warn("plugin.json 与 marketplace.json 的 description 不一致（两处需人工同步）")
 
 
+MINIMAX_CATEGORIES = {
+    "Office", "Studio", "Design & Sites", "Code", "Business", "Sales",
+    "Productivity", "Science & Healthcare", "Education", "Other",
+}
+# 取自 Desktop app.asar 中 readMiniMaxPluginPackage 的 MANIFEST_FIELDS（封闭集）
+MINIMAX_FIELDS = {
+    "$schema", "schemaVersion", "name", "displayName", "version", "description",
+    "author", "icon", "darkIcon", "category", "exampleQueries", "apps",
+    "mcpServers", "skills", "hooks", "hostBindings",
+}
+MINIMAX_REQUIRED = {
+    "schemaVersion", "name", "version", "description", "author", "icon",
+    "category", "exampleQueries", "apps", "mcpServers", "skills",
+}
+AGENT_FIELDS = {
+    "$schema", "name", "version", "description", "author",
+    "homepage", "repository", "license", "keywords", "extensions",
+}
+AGENT_SCHEMA = "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json"
+
+
+def check_minimax_manifest(rep, plugin_dir, pj):
+    """MiniMax Plugin V1 清单：.minimax-plugin/plugin.json。
+
+    根目录 plugin.json（Agent Plugins 1.0）只有在被该读取器完整接受时才优先；
+    本仓库统一使用 .minimax-plugin/ 形态，故根清单改为可选。
+    """
+    mp = os.path.join(plugin_dir, ".minimax-plugin", "plugin.json")
+    if not os.path.isfile(mp):
+        rep.error("缺少 .minimax-plugin/plugin.json（MiniMax Plugin V1 入口清单）")
+        return
+    try:
+        data = json.loads(read_text(mp))
+    except (json.JSONDecodeError, UnicodeDecodeError) as e:
+        rep.error(f".minimax-plugin/plugin.json 不是合法 JSON: {e}")
+        return
+    if not isinstance(data, dict):
+        rep.error(".minimax-plugin/plugin.json 顶层必须是 JSON 对象")
+        return
+
+    missing = MINIMAX_REQUIRED - set(data)
+    if missing:
+        rep.error(f".minimax-plugin/plugin.json 缺必填字段: {', '.join(sorted(missing))}")
+    unknown = set(data) - MINIMAX_FIELDS
+    if unknown:
+        rep.error(f".minimax-plugin/plugin.json 含封闭集外字段: {', '.join(sorted(unknown))}")
+    if data.get("schemaVersion") != 1:
+        rep.error(f".minimax-plugin/plugin.json schemaVersion 必须为 1，实际 {data.get('schemaVersion')}")
+    if data.get("name") != pj.get("name"):
+        rep.error(f".minimax-plugin name ({data.get('name')}) 与 .claude-plugin 清单 name ({pj.get('name')}) 不一致")
+    if data.get("version") != pj.get("version"):
+        rep.warn(f".minimax-plugin version ({data.get('version')}) 与 .claude-plugin 清单 version ({pj.get('version')}) 不一致")
+    if data.get("category") not in MINIMAX_CATEGORIES:
+        rep.error(f".minimax-plugin category 非法: {data.get('category')}")
+    if data.get("apps") != []:
+        rep.error(".minimax-plugin apps 必须为 []（本地插件不支持 App 能力）")
+    eq = data.get("exampleQueries")
+    if not isinstance(eq, list) or not eq:
+        rep.error(".minimax-plugin exampleQueries 必须为非空数组")
+    for key in ("icon", "darkIcon"):
+        v = data.get(key)
+        if not isinstance(v, str) or not v.lower().endswith((".png", ".jpg", ".jpeg", ".webp")):
+            rep.error(f".minimax-plugin {key} 扩展名非法: {v}")
+        elif not os.path.isfile(os.path.join(plugin_dir, v.replace("/", os.sep))):
+            rep.error(f".minimax-plugin {key} 引用的文件不存在: {v}")
+    caps = sum(len(data.get(k) or []) for k in ("mcpServers", "skills", "hooks"))
+    if caps == 0:
+        rep.error(".minimax-plugin 未声明任何能力（mcpServers/skills/hooks 至少一项非空）")
+    for s in data.get("skills") or []:
+        if not re.match(r"^skills/[^/]+/SKILL\.md$", s):
+            rep.error(f".minimax-plugin skills 路径格式非法: {s}")
+        elif not os.path.isfile(os.path.join(plugin_dir, s.replace("/", os.sep))):
+            rep.error(f".minimax-plugin skills 引用的文件不存在: {s}")
+    for m in data.get("mcpServers") or []:
+        if not os.path.isfile(os.path.join(plugin_dir, m.replace("/", os.sep))):
+            rep.error(f".minimax-plugin mcpServers 引用的文件不存在: {m}")
+
+
 def check_agent_plugins_spec(rep, plugin_dir, pj):
-    """Agent Plugins 1.0（agent-plugins.org）便携清单一致性：根 plugin.json。"""
+    """根目录 plugin.json（Agent Plugins 1.0 便携清单）——可选。
+
+    运行时优先级：根 plugin.json 仅在被 Agent Plugins 1.0 读取器完整接受时上位，
+    否则自动穿透到 .minimax-plugin/。本仓库已统一走 .minimax-plugin/，故根清单
+    存在时只做一致性核对，缺失不再报错。
+    """
     root_pj = os.path.join(plugin_dir, "plugin.json")
-    schema = "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json"
     if not os.path.isfile(root_pj):
-        rep.error("缺少根目录 plugin.json（Agent Plugins 1.0 便携清单：$schema+name+version）")
         return
     try:
         data = json.loads(read_text(root_pj))
     except (json.JSONDecodeError, UnicodeDecodeError) as e:
-        rep.error(f"根目录 plugin.json 不是合法 JSON: {e}")
+        rep.warn(f"根目录 plugin.json 不是合法 JSON（会被运行时忽略）: {e}")
         return
-    if data.get("$schema") != schema:
-        rep.error(f"根 plugin.json $schema 应为 {schema}，实际 {data.get('$schema')}")
+    if os.path.isfile(os.path.join(plugin_dir, ".minimax-plugin", "plugin.json")):
+        rep.warn("根 plugin.json 与 .minimax-plugin/ 并存——根清单会先被 Agent Plugins 1.0 读取器接受，"
+                 "导致 .minimax-plugin 的图标/分类/示例查询不生效")
+    if data.get("$schema") != AGENT_SCHEMA:
+        rep.error(f"根 plugin.json $schema 应为 {AGENT_SCHEMA}，实际 {data.get('$schema')}")
     if data.get("name") != pj.get("name"):
         rep.error(f"根 plugin.json name ({data.get('name')}) 与 .claude-plugin 清单 name ({pj.get('name')}) 不一致")
     if data.get("version") != pj.get("version"):
         rep.warn(f"根 plugin.json version ({data.get('version')}) 与 .claude-plugin 清单 version ({pj.get('version')}) 不一致")
-    extra = set(data) - {"$schema", "name", "version", "description", "author",
-                         "homepage", "repository", "license", "keywords", "extensions"}
+    extra = set(data) - AGENT_FIELDS
     if extra:
         rep.warn(f"根 plugin.json 含规范外字段: {', '.join(sorted(extra))}")
 
 
 def check_minimax_compat(rep, plugin_dir):
-    """MiniMax Code (mcode 0.4.0+) 兼容性检查。
+    """MiniMax Code Desktop 兼容性检查。
 
-    依据 MiniMax-Code-Plugins docs/plugin-compatibility.md：
-    支持 skills 与 MCP（mcp.json）；不支持自定义 agents/commands/LSP；
-    每插件上限 64 个 skill、8 个 MCP 服务器；0.4.0+ 忽略根目录 plugin.json。
+    依据 Desktop 运行时（app.asar 内 readAgentPluginPackage / readMiniMaxPluginPackage）：
+    - 清单优先级：根 plugin.json（Agent Plugins 1.0）仅在被完整接受时上位，
+      否则穿透到 .minimax-plugin/plugin.json，再到 .claude-plugin/（vendor）、.codex-plugin/。
+    - skills 由 skills/<name>/SKILL.md 自动发现；每插件上限 64 skill、8 个 MCP。
+    - 自定义 agents/commands/LSP 不支持。
+    - .mcp.json（Claude/ZCode 方言）与 mcp.json（MiniMax 方言）允许不同，
+      但服务器身份（名字/URL）必须一致。
     """
     agents_dir = os.path.join(plugin_dir, "agents")
     if os.path.isdir(agents_dir) and any(f.endswith(".md") for f in os.listdir(agents_dir)):
@@ -293,16 +380,28 @@ def check_minimax_compat(rep, plugin_dir):
     dot_mcp = os.path.join(plugin_dir, ".mcp.json")
     plain_mcp = os.path.join(plugin_dir, "mcp.json")
     if os.path.isfile(plain_mcp) and not os.path.isfile(dot_mcp):
-        rep.warn("存在 mcp.json 但缺 .mcp.json——Claude/ZCode 读不到 MCP 配置（MiniMax 读 mcp.json）")
+        rep.warn("存在 mcp.json 但缺 .mcp.json——Claude/ZCode 读不到该 MCP 配置")
     if os.path.isfile(dot_mcp) and os.path.isfile(plain_mcp):
         try:
-            if json.loads(read_text(dot_mcp)) != json.loads(read_text(plain_mcp)):
-                rep.error(".mcp.json 与 mcp.json 内容不一致——双份 MCP 配置已漂移")
+            a = json.loads(read_text(dot_mcp)).get("mcpServers") or {}
+            b = json.loads(read_text(plain_mcp)).get("mcpServers") or {}
         except json.JSONDecodeError:
-            pass  # JSON 合法性已在组件检查中报告
-
-    if os.path.isfile(os.path.join(plugin_dir, "plugin.json")):
-        pass  # 根 plugin.json = Agent Plugins 1.0 便携清单（本仓库政策要求存在），由 check_agent_plugins_spec 校验
+            a = b = None  # JSON 合法性已在组件检查中报告
+        if a is not None and b is not None:
+            if set(a) != set(b):
+                rep.error(f".mcp.json 与 mcp.json 的 MCP 服务器集合不一致: "
+                          f"{sorted(a)} vs {sorted(b)}")
+            else:
+                for sname in sorted(a):
+                    ua = (a[sname] or {}).get("url")
+                    ub = (b[sname] or {}).get("url")
+                    if ua and ub and ua != ub:
+                        rep.error(f"MCP [{sname}] 两份配置的 url 不一致: {ua} vs {ub}")
+                    ta = (a[sname] or {}).get("type")
+                    tb = (b[sname] or {}).get("type")
+                    if ta != tb:
+                        rep.warn(f"MCP [{sname}] transport 声明不同（{ta} / {tb}）——"
+                                 f"方言差异属预期，仅确认各自客户端可接受")
 
     skills_dir = os.path.join(plugin_dir, "skills")
     if os.path.isdir(skills_dir):
@@ -364,6 +463,7 @@ def check_plugin_dir(plugin_dir, standalone=False):
     check_json_components(rep, plugin_dir)
     check_python_scripts(rep, plugin_dir)
     check_minimax_compat(rep, plugin_dir)
+    check_minimax_manifest(rep, plugin_dir, pj)
     check_agent_plugins_spec(rep, plugin_dir, pj)
     if not os.path.isfile(os.path.join(plugin_dir, "README.md")):
         rep.warn("缺少 README.md（建议补一份插件说明）")
