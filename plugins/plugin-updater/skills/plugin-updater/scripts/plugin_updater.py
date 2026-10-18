@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-plugin_updater.py — 外部聚合插件的更新检查（check）与升级（update，后续票交付）。
+plugin_updater.py — 外部聚合插件的更新检查（check）与升级（update）。
 
 市场里 source 为 github 引用式的外部聚合条目（如 mattpocock-skills）靠
 marketplace.json 里的 metadata.pinnedRef/pinnedSha pin 在固定基线；本工具
@@ -20,27 +20,49 @@ check 三条线（票 01 pin 线 + 票 02 枢纽同步线 / 其他市场副本�
                 副本报已装版本/来源市场/上游 sha 并打印刷新命令（只打印不代跑）；
                 未装的 agent（含无安装记录的 MiniMax）报「未安装」不报错。
 
-选项:
-    --root    market 仓库根（默认从脚本位置向上推导，或环境变量 MARKET_REPO；
-              对齐 skill-distributor 的惯例）
-    --hub     枢纽 skills 目录（默认 ~/.agents/skills）
+update 仓库写半链（票 03）——对有新版的条目（或 --entry 指定条目）依序：
+    下载新 SHA tarball（与 check 枢纽线共用一次下载）-> plugin-validator
+    --standalone 校验门（解包树上跑，非 0 阻断 error 全链中止、零写入；
+    「缺 .minimax-plugin」对外部引用式条目特判 N/A——本地无源码、不分发给
+    MiniMax，见 2026-10-18 手动重 pin 先例）-> bump marketplace.json 该条目
+    pinnedSha/pinnedAt（note 仅同步内嵌旧 SHA/日期的文字）-> 同步
+    docs/plugin-compatibility.md「外部聚合插件」表格的 pin 列。
+    全部条目先计划后写入（全或无）：任一条目失败就不写任何文件。
+    无 pin 条目 update 时 pin 到当时 head 建基线（照走同一校验门，写齐
+    pinnedRef（git ls-remote --symref 取默认分支）/pinnedSha/pinnedAt）。
+    枢纽族实体同步与链接层同步是票 04，本链不触碰。
 
-退出码: 0=全部最新且枢纽同步  1=有更新/无基线/查询失败/枢纽有差异  2=用法/输入错误
+选项:
+    check: --root / --hub（同上）
+    update: --entry <名> 限定单条目；--yes 非交互确认（缺则拒绝一切变更）；
+            --dry-run 只打印将做的变更不写文件；--root 同上
+
+退出码: 0=全部最新且枢纽同步（check）/ 更新成功或无需更新（update）
+       1=有更新/无基线/查询失败/枢纽有差异（check）/ 更新失败全链中止（update）
+       2=用法/输入错误（含非交互缺 --yes）
        （副本线只报告不影响退出码——外部市场副本是常驻消费线，不是可消除的漂移）
 
-设计约束（票 03 的 update 会复用）:
+设计约束:
     外部访问收敛为可注入 effect 函数（fetch_remote_head / fetch_upstream_version /
-    fetch_tarball / run_validator），与纯决策逻辑（parse_external_entries /
-    parse_ls_remote_output / parse_upstream_plugin_json / judge_entry /
-    derive_family_members / judge_hub_members / collect_copy_line /
-    build_report / build_hub_report / build_copy_report / decide_exit_code）分离；
+    fetch_tarball / fetch_remote_default_ref / run_validator），与纯决策逻辑
+    （parse_external_entries / parse_ls_remote_output / parse_upstream_plugin_json /
+    judge_entry / derive_family_members / judge_hub_members / collect_copy_line /
+    build_report / build_hub_report / build_copy_report / decide_exit_code /
+    judge_validator_output / parse_symref_output / apply_pin_bump /
+    render_pin_cell / sync_compat_table）分离；编排（run_check / run_hub_check /
+    plan_updates / apply_updates）只做组合。
+    update 的解包树在校验门前用 normalize_tree_root 把目录名规范成 plugin.json
+    的 name（codeload 顶层是 <repo>-<sha>，validator 校验 name 与目录名一致；
+    手动重 pin 先例的 git clone 目录名天然对齐，tarball 链需显式补齐）。
     回归测试只走内存与 tmp 接缝，网络不进测试。
-    update 子链（validator 校验门、pin bump、枢纽三方同步）仍留接缝未实现。
 """
 
 import argparse
+import copy
+import datetime
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -58,6 +80,30 @@ UPSTREAM_RAW = ("https://raw.githubusercontent.com/{repo}/{sha}"
 CODELOAD_TARBALL = "https://codeload.github.com/{repo}/tar.gz/{sha}"
 # 无 pin 条目查询上游 head 用的 ref
 DEFAULT_REF = "HEAD"
+
+# ---------------------------------------------------------------- update（票 03）
+# 仓库内相对路径（--root 仓库根拼拼）：plugin-validator 校验门脚本与 compat 文档
+VALIDATOR_REL = os.path.join("plugins", "plugin-validator", "skills",
+                             "plugin-validator", "scripts", "check_plugin.py")
+COMPAT_REL = os.path.join("docs", "plugin-compatibility.md")
+# 校验门输出里 error 行与「缺 .minimax-plugin」的形态（check_plugin.py 的打印格式）
+ERROR_LINE_RE = re.compile(r"^\s*ERROR\s+(.+?)\s*$", re.MULTILINE)
+MINIMAX_MISSING_RE = re.compile(r"缺少 \.minimax-plugin/plugin\.json")
+# 校验门放行的必要证据：check_plugin.py 末尾必有「结果: ...」汇总行，
+# 没有 = 输出不可识别（脚本缺失/崩溃等），保守按未通过处理
+GATE_SUMMARY_PREFIX = "结果:"
+
+# update 计划的三种动作
+ACTION_BUMP = "bump"          # 有 pin 且落后 -> 换新 SHA
+ACTION_BASELINE = "baseline"  # 无 pin -> pin 到当时 head 建基线
+ACTION_SKIP = "skip"          # pin==head -> 不动（幂等重跑的基础）
+# 计划失败的阶段
+STAGE_HEAD = "head"        # 上游 head 查询失败
+STAGE_SYMREF = "symref"    # 默认分支解析失败（仅建基线条目）
+STAGE_TARBALL = "tarball"  # 新版 tarball 下载/解包失败
+STAGE_GATE = "gate"        # 校验门未通过（其余 error 照常阻断）
+# UTF-8 BOM：Windows 工具链可能写入；读写 marketplace.json 时跟随原文件
+BOM = "\\ufeff"  # UTF-8 BOM：Windows 工具链可能写入；读写 marketplace.json 时跟随原文件
 
 STATUS_UPTODATE = "up-to-date"
 STATUS_UPDATE = "update-available"
@@ -195,6 +241,20 @@ def parse_ls_remote_output(output, ref):
     raise ValueError(f"ls-remote 输出中没有精确匹配 {ref} 的行")
 
 
+def parse_symref_output(output):
+    """从 `git ls-remote --symref <url> HEAD` 输出取默认分支短名。
+
+    首行形如 `ref: refs/heads/main\\tHEAD`；没有 ref: 行就报错（与
+    parse_ls_remote_output 同一纪律：静默兜底会 pin 错基线）。
+    """
+    for line in output.splitlines():
+        if line.startswith("ref:"):
+            refspec = line[len("ref:"):].split("\t")[0].strip()
+            if refspec:
+                return refspec.rsplit("/", 1)[-1]
+    raise ValueError("ls-remote --symref 输出中没有 ref: 行")
+
+
 def parse_upstream_plugin_json(raw):
     """从上游 plugin.json 原始字节取 version；任何解析失败返回 None。"""
     try:
@@ -277,6 +337,92 @@ def decide_exit_code(results, hub_results=None):
     return 0
 
 
+# ---------------------------------------------------------------- update 纯决策层（票 03）
+
+def render_pin_cell(ref, sha, date, version=None):
+    """compat 表格 pin 列单元格：``main `49dd158`（2026-10-18，v1.3.1）`` 格式。
+
+    版本号未知（上游拉取失败）时省略版本段，只写日期。
+    """
+    cell = f"{ref} `{(sha or '?')[:7]}`（{date}"
+    if version:
+        cell += f"，v{version}"
+    return cell + "）"
+
+
+def sync_compat_table(text, plugin_name, new_cell):
+    """同步 compat 文档「外部聚合插件」表格某条目行的 pin 列（第 3 列）。
+
+    精准行替换（正则锚定行首条目名，只动该行第 3 列），不整文件重写；
+    上游列/三平台列/其余行/表格外正文一律不动。行不存在（该条目没进过表格）
+    或单元格已是新值（幂等）都返回原文。返回 (新文本, 是否有变化)。
+    """
+    pattern = re.compile(
+        r"^(\|[ \t]*" + re.escape(plugin_name) + r"[ \t]*\|[^|\n]*\|)([^|\n]*)(\|)",
+        re.MULTILINE)
+    m = pattern.search(text)
+    if m is None or m.group(2).strip() == new_cell.strip():
+        return text, False
+    new_text = pattern.sub(
+        lambda mm: f"{mm.group(1)} {new_cell} {mm.group(3)}", text, count=1)
+    return new_text, new_text != text
+
+
+def _sync_note_text(note, old_sha, new_sha, old_date, new_date):
+    """note 字段只同步内嵌的旧 SHA / 旧日期文字（长串优先替换防前缀截断），
+    其余内容原样保留（票面口径：note 是人工备注，工具不代拟）。"""
+    out = note
+    if old_sha and new_sha and old_sha.lower() != new_sha.lower():
+        for form in (old_sha, old_sha[:12], old_sha[:7]):
+            if form and form in out:
+                out = out.replace(form, new_sha[:len(form)])
+    if old_date and old_date != new_date and old_date in out:
+        out = out.replace(old_date, new_date)
+    return out
+
+
+def apply_pin_bump(marketplace, name, new_sha, new_date, new_ref=None):
+    """marketplace.json 单条目 pin bump（纯函数，不改入参 dict）。
+
+    bump（有 pin）：pinnedSha -> 新 head、pinnedAt -> 当天，pinnedRef 原样；
+    建基线（无 pin，new_ref 给默认分支）：新建 metadata 写齐
+    pinnedRef/pinnedSha/pinnedAt（键序对齐现有条目排版）。
+    note 仅同步内嵌旧 SHA/日期的文字。找不到条目报 ValueError。
+    返回 (新 marketplace dict, 是否有变化)。
+    """
+    new_data = copy.deepcopy(marketplace)
+    entry = next((p for p in new_data.get("plugins", [])
+                  if isinstance(p, dict) and p.get("name") == name), None)
+    if entry is None:
+        raise ValueError(f"marketplace.json 中没有条目 {name}")
+    meta = entry.get("metadata")
+    if not isinstance(meta, dict):
+        meta = {}
+        entry["metadata"] = meta
+    old_sha = meta.get("pinnedSha")
+    old_date = meta.get("pinnedAt")
+    if new_ref is not None:
+        meta["pinnedRef"] = new_ref
+    meta["pinnedSha"] = new_sha
+    meta["pinnedAt"] = new_date
+    if isinstance(meta.get("note"), str):
+        meta["note"] = _sync_note_text(meta["note"], old_sha, new_sha,
+                                       old_date, new_date)
+    return new_data, new_data != marketplace
+
+
+def serialize_marketplace_bytes(original_text, data):
+    """按原文件排版序列化 marketplace：2 空格缩进、非 ASCII 原样、
+    BOM / 行尾约定（CRLF 或 LF）/ 末尾换行都跟随原文件。返回 bytes。"""
+    body = json.dumps(data, ensure_ascii=False, indent=2)
+    nl = "\r\n" if "\r\n" in original_text else "\n"
+    if original_text.startswith(BOM):
+        body = BOM + body
+    if original_text.endswith("\n"):
+        body += "\n"
+    return body.replace("\n", nl).encode("utf-8")
+
+
 # ---------------------------------------------------------------- effect 接缝
 # 外部访问的唯一出入口；回归测试在这里注入假函数（见 test_plugin_updater.py）。
 
@@ -342,6 +488,32 @@ def extract_tarball(tar_path, dest_dir):
     if len(entries) == 1 and os.path.isdir(os.path.join(tree_dir, entries[0])):
         return os.path.join(tree_dir, entries[0])
     return tree_dir
+
+
+def normalize_tree_root(tree_root):
+    """把解包树根目录名规范成 plugin.json 的 name，返回（可能改名的）树根。
+
+    codeload tarball 顶层目录是 <repo>-<sha>，而 validator 会校验 plugin.json
+    name 与目录名一致——手动重 pin 先例（2026-10-18）用 git clone 出来的目录名
+    天然对齐，tarball 解包链需要显式补齐这一步，否则会出假阻断 error。
+    plugin.json 缺失/损坏/已对齐时原样返回（让校验门去报真正的 error）。
+    """
+    pj = os.path.join(tree_root, ".claude-plugin", "plugin.json")
+    try:
+        with open(pj, "r", encoding="utf-8-sig") as f:
+            name = json.load(f).get("name")
+    except (OSError, ValueError, AttributeError):
+        return tree_root
+    if not (isinstance(name, str) and name.strip()):
+        return tree_root
+    target = os.path.join(os.path.dirname(tree_root), name)
+    if os.path.basename(tree_root) == name or os.path.exists(target):
+        return tree_root
+    try:
+        os.rename(tree_root, target)
+    except OSError:
+        return tree_root
+    return target
 
 
 def derive_family_members(tree_root):
@@ -418,12 +590,55 @@ def judge_hub_members(family, hub_dir, tree_root):
     return rows
 
 
-def run_validator(tree_path):
-    """[票 03 接缝] 对解包的新版本树调 plugin-validator --standalone 校验门。
+def run_validator(tree_path, validator_script, timeout=300):
+    """[票 03] 对解包的新版本树调 plugin-validator --standalone 校验门。
 
-    返回 (ok, 输出文本)；非 0 error 才放行写入。本票未实现；测试注入假件。
+    返回合并后的输出文本（stdout+stderr）；是否放行由 judge_validator_output
+    按输出内容判定（error 行 + 「结果:」汇总行），退出码只是诊断信息。
+    validator 脚本不存在直接报错——门没有证据时绝不放行。
+    测试注入假 runner（签名 validator(tree) -> 输出文本）。
     """
-    raise NotImplementedError("update 子链（票 03）交付时实现")
+    if not os.path.isfile(validator_script):
+        raise RuntimeError(f"validator 脚本不存在: {validator_script}")
+    proc = subprocess.run(
+        [sys.executable, validator_script, tree_path, "--standalone"],
+        capture_output=True, timeout=timeout)
+    # check_plugin.py 已把 stdout 重配置为 UTF-8；stderr 按容错解码
+    out = (proc.stdout or b"").decode("utf-8", errors="replace")
+    err = (proc.stderr or b"").decode("utf-8", errors="replace")
+    return out + err
+
+
+def fetch_remote_default_ref(repo, timeout=60):
+    """上游默认分支名（git ls-remote --symref HEAD，建基线条目写 pinnedRef 用）。"""
+    proc = subprocess.run(
+        ["git", "ls-remote", "--symref", GITHUB_URL.format(repo=repo), "HEAD"],
+        capture_output=True, text=True, timeout=timeout)
+    if proc.returncode != 0:
+        raise RuntimeError(
+            f"git ls-remote --symref 失败: {(proc.stderr or '').strip()}")
+    return parse_symref_output(proc.stdout)
+
+
+def judge_validator_output(output, external_ref=True):
+    """校验门判定（纯函数）：解析 validator 输出，决定放行与否。
+
+    - error 行（`ERROR ` 前缀）全部收集；
+    - 「缺 .minimax-plugin/plugin.json」对外部引用式条目（github source，本地
+      无源码、不分发给 MiniMax）特判 N/A 不阻断——2026-10-18 手动重 pin 先例；
+      其余 error 照常阻断；
+    - 无「结果:」汇总行 = 输出不可识别（脚本缺失/崩溃），保守按未通过处理。
+    返回 {passed, blocking, waived, recognized}。
+    """
+    text = output or ""
+    errors = ERROR_LINE_RE.findall(text)
+    waived = [e for e in errors if external_ref and MINIMAX_MISSING_RE.search(e)]
+    blocking = [e for e in errors
+                if not (external_ref and MINIMAX_MISSING_RE.search(e))]
+    recognized = any(line.lstrip().startswith(GATE_SUMMARY_PREFIX)
+                     for line in text.splitlines())
+    return {"passed": recognized and not blocking,
+            "blocking": blocking, "waived": waived, "recognized": recognized}
 
 
 # ---------------------------------------------------------------- 编排
@@ -479,6 +694,160 @@ def run_hub_check(entries, hub_dir, get_tarball=None, work_root=None):
         finally:
             shutil.rmtree(work, ignore_errors=True)
     return results
+
+
+# ---------------------------------------------------------------- update 编排（票 03）
+# 两阶段、全或无：先对全部目标条目做计划（下载 + 校验门，不写任何仓库文件），
+# 任一条目失败就整链不进写盘阶段——失败的更新不留半成品。
+
+def plan_updates(entries, fetch_head=None, fetch_version=None,
+                 fetch_default_ref=None, get_tarball=None, validator=None,
+                 validator_script=None, work_root=None, today=None):
+    """update 阶段一（不写盘）：逐条目取 head -> 判动作 -> 下载新版 tarball ->
+    校验门，产出计划或失败。单条目失败（head/默认分支/tarball/校验门）不中断
+    其余条目的计划；是否全链写入由调用方按「有无失败」决定。
+
+    plan 形态: {action: bump|baseline|skip, name, repo, ref, old_sha, new_sha,
+    new_ref(仅建基线), date, version, waived}
+    failure 形态: {name, repo, stage, error, detail(gate 时为阻断 error 清单)}
+    所有外部访问走注入接缝（默认接真实 effect 函数）。
+    """
+    fetch_head = fetch_head or fetch_remote_head
+    fetch_version = fetch_version or fetch_upstream_version
+    fetch_default_ref = fetch_default_ref or fetch_remote_default_ref
+    get_tarball = get_tarball or fetch_tarball
+    if validator is None:
+        if not validator_script:
+            raise ValueError("plan_updates 需要 validator 或 validator_script")
+        validator = lambda tree: run_validator(tree, validator_script)  # noqa: E731
+    today = today or datetime.date.today().isoformat()
+
+    plans, failures = [], []
+    for e in entries:
+        ref = e.get("pinned_ref") or DEFAULT_REF
+        try:
+            head = fetch_head(e["repo"], ref)
+        except Exception as exc:
+            failures.append({"name": e["name"], "repo": e["repo"],
+                             "stage": STAGE_HEAD, "error": str(exc),
+                             "detail": []})
+            continue
+        if e.get("pinned_sha") and e["pinned_sha"].lower() == (head or "").lower():
+            plans.append({"action": ACTION_SKIP, "name": e["name"],
+                          "repo": e["repo"], "ref": ref,
+                          "old_sha": e["pinned_sha"], "new_sha": head,
+                          "new_ref": None, "date": None, "version": None,
+                          "waived": []})
+            continue
+        action = ACTION_BASELINE if not e.get("pinned_sha") else ACTION_BUMP
+        new_ref = None
+        if action == ACTION_BASELINE:
+            try:
+                new_ref = fetch_default_ref(e["repo"])
+            except Exception as exc:
+                failures.append({"name": e["name"], "repo": e["repo"],
+                                 "stage": STAGE_SYMREF, "error": str(exc),
+                                 "detail": []})
+                continue
+        work = tempfile.mkdtemp(prefix="plugin-updater-update-", dir=work_root)
+        try:
+            tar_path = get_tarball(e["repo"], head, work)
+            tree = extract_tarball(tar_path, work)
+            tree = normalize_tree_root(tree)
+        except Exception as exc:
+            failures.append({"name": e["name"], "repo": e["repo"],
+                             "stage": STAGE_TARBALL, "error": str(exc),
+                             "detail": []})
+            shutil.rmtree(work, ignore_errors=True)
+            continue
+        try:
+            output = validator(tree)
+        except Exception as exc:
+            failures.append({"name": e["name"], "repo": e["repo"],
+                             "stage": STAGE_GATE,
+                             "error": f"validator 调用失败: {exc}",
+                             "detail": []})
+            shutil.rmtree(work, ignore_errors=True)
+            continue
+        verdict = judge_validator_output(output, external_ref=True)
+        if not verdict["passed"]:
+            if verdict["blocking"]:
+                error = f"{len(verdict['blocking'])} error"
+                detail = verdict["blocking"]
+            else:
+                error = "validator 输出不可识别（无「结果:」汇总行）"
+                detail = []
+            if verdict["waived"]:
+                error += (f"；已豁免 {len(verdict['waived'])} 项"
+                          f"「缺 .minimax-plugin」（外部引用式条目 N/A）")
+            failures.append({"name": e["name"], "repo": e["repo"],
+                             "stage": STAGE_GATE, "error": error,
+                             "detail": detail})
+            shutil.rmtree(work, ignore_errors=True)
+            continue
+        plans.append({"action": action, "name": e["name"], "repo": e["repo"],
+                      "ref": ref, "old_sha": e.get("pinned_sha"),
+                      "new_sha": head, "new_ref": new_ref, "date": today,
+                      "version": fetch_version(e["repo"], head),
+                      "waived": verdict["waived"]})
+        shutil.rmtree(work, ignore_errors=True)
+    return plans, failures
+
+
+def apply_updates(root, plans, dry_run=False, marketplace_path=None,
+                  compat_path=None):
+    """update 阶段二：把通过校验门的计划写进仓库（--dry-run 只算不写）。
+
+    marketplace.json（pin bump / 建基线）与 compat 文档（pin 列）先全部算好、
+    与原字节比对有变化才写盘——重复 apply 是字节级零改动（幂等兜底，正常路径
+    的幂等在 plan_updates 的 skip 判定）。compat 表里没有该条目行时跳过该条目
+    的表格同步并记入 skipped（建基线条目可能还没进过表格，不算失败）。
+    返回 {marketplace: {changed, written}, compat: {changed, written, skipped}}。
+    """
+    mp_path = marketplace_path or os.path.join(root, ".claude-plugin",
+                                               "marketplace.json")
+    compat_path = compat_path or os.path.join(root, COMPAT_REL)
+    result = {"marketplace": {"changed": False, "written": False},
+              "compat": {"changed": False, "written": False, "skipped": []}}
+    to_apply = [p for p in plans if p["action"] in (ACTION_BUMP, ACTION_BASELINE)]
+    if not to_apply:
+        return result
+
+    with open(mp_path, "rb") as f:
+        mp_bytes = f.read()
+    mp_text = mp_bytes.decode("utf-8")
+    data = json.loads(mp_text.lstrip(BOM))
+    compat_bytes = open(compat_path, "rb").read()
+    compat_text = compat_bytes.decode("utf-8")
+
+    changed_mp = False
+    for p in to_apply:
+        data, ch = apply_pin_bump(data, p["name"], p["new_sha"], p["date"],
+                                  new_ref=p["new_ref"])
+        changed_mp = changed_mp or ch
+    new_mp_bytes = serialize_marketplace_bytes(mp_text, data)
+    result["marketplace"]["changed"] = new_mp_bytes != mp_bytes
+
+    new_compat_text = compat_text
+    for p in to_apply:
+        cell_ref = p.get("new_ref") or p.get("ref") or DEFAULT_REF
+        cell = render_pin_cell(cell_ref, p["new_sha"], p["date"], p.get("version"))
+        new_compat_text, ch = sync_compat_table(new_compat_text, p["name"], cell)
+        if not ch:
+            result["compat"]["skipped"].append(p["name"])
+    result["compat"]["changed"] = new_compat_text != compat_text
+
+    if dry_run:
+        return result
+    if result["marketplace"]["changed"]:
+        with open(mp_path, "wb") as f:
+            f.write(new_mp_bytes)
+        result["marketplace"]["written"] = True
+    if result["compat"]["changed"]:
+        with open(compat_path, "wb") as f:
+            f.write(new_compat_text.encode("utf-8"))
+        result["compat"]["written"] = True
+    return result
 
 
 # ---------------------------------------------------------------- 副本线纯决策层
@@ -678,6 +1047,74 @@ def build_copy_report(copy_rows):
     return lines
 
 
+def build_update_report(plans, failures, apply_result=None, dry_run=False,
+                        market_root=None):
+    """update 报告：逐条目计划（含校验门豁免）、失败明细、写入结果。
+
+    failures 非空时明确「全链中止、零写入」；apply_result 为 None 表示没进
+    写盘阶段；dry_run 把写入段标成「将写入（dry-run，未写入）」。
+    """
+    header = "== update（市场根: " + (market_root or "?") + "）"
+    if dry_run:
+        header += "——dry-run，只看不做"
+    lines = [header]
+    counts = {ACTION_BUMP: 0, ACTION_BASELINE: 0, ACTION_SKIP: 0}
+    for i, p in enumerate(plans, 1):
+        counts[p["action"]] += 1
+        lines.append("")
+        if p["action"] == ACTION_SKIP:
+            lines.append(f"[{i}/{len(plans)}] {p['name']} : 已最新，跳过")
+            continue
+        new_cell = render_pin_cell(p.get("new_ref") or p["ref"], p["new_sha"],
+                                   p["date"], p.get("version"))
+        if p["action"] == ACTION_BASELINE:
+            lines.append(f"[{i}/{len(plans)}] {p['name']} : 建基线 {new_cell}")
+        else:
+            lines.append(f"[{i}/{len(plans)}] {p['name']} : bump pin "
+                         f"{(p['old_sha'] or '?')[:7]} -> {new_cell}")
+        if p.get("waived"):
+            lines.append(f"    校验门: 通过（豁免 {len(p['waived'])} 项"
+                         f"「缺 .minimax-plugin」——外部引用式条目 N/A）")
+    if failures:
+        lines.append("")
+        lines.append("== 失败——全链中止、零写入（要更新先解决下列问题）")
+        for f in failures:
+            stage_label = {STAGE_HEAD: "head 查询失败", STAGE_SYMREF: "默认分支解析失败",
+                           STAGE_TARBALL: "tarball 下载/解包失败",
+                           STAGE_GATE: "校验门未通过"}[f["stage"]]
+            lines.append(f"[{f['name']}] {stage_label}——{f['error']}")
+            for e in f.get("detail") or []:
+                lines.append(f"    ERROR   {e}")
+    if apply_result is not None:
+        lines.append("")
+        if dry_run:
+            lines.append("== 将写入（dry-run，未写入）")
+        else:
+            lines.append("== 写入")
+        mp = apply_result["marketplace"]
+        compat = apply_result["compat"]
+        if mp["changed"]:
+            n = sum(1 for p in plans if p["action"] in (ACTION_BUMP, ACTION_BASELINE))
+            lines.append(f"  marketplace.json: {'已写入' if mp['written'] else '有变更未写入'}"
+                         f"（{n} 条 pin 更新/建基线）")
+        else:
+            lines.append("  marketplace.json: 无变更")
+        if compat["changed"]:
+            lines.append(f"  docs/plugin-compatibility.md: "
+                         f"{'已写入' if compat['written'] else '有变更未写入'}"
+                         f"（pin 列已同步）")
+        else:
+            lines.append("  docs/plugin-compatibility.md: 无变更")
+        if compat["skipped"]:
+            lines.append(f"  （compat 表无行，跳过表格同步: {', '.join(compat['skipped'])}）")
+    lines.append("")
+    lines.append("汇总: " + " / ".join(
+        f"{counts[a]} {label}" for a, label in
+        ((ACTION_BUMP, "更新"), (ACTION_BASELINE, "建基线"), (ACTION_SKIP, "已最新")))
+        + f" / 失败 {len(failures)}")
+    return lines
+
+
 # ---------------------------------------------------------------- 入口
 
 def cmd_check(root=None, hub_dir=None):
@@ -701,19 +1138,75 @@ def cmd_check(root=None, hub_dir=None):
     return decide_exit_code(pin_results, hub_results)
 
 
+def cmd_update(root=None, entry=None, yes=False, dry_run=False, interactive=None,
+               fetch_head=None, fetch_version=None, fetch_default_ref=None,
+               get_tarball=None, validator=None, today=None):
+    """update 入口：守卫 -> 计划（下载+校验门，零写入）-> 全或无写盘。
+
+    非交互环境（stdin 非 tty）缺 --yes 时拒绝执行任何变更（--dry-run 不写文件
+    所以豁免）——守卫在任何外部访问之前触发。任一条目失败（head/tarball/校验门）
+    则全链不写盘。外部访问接缝可注入（测试用）。
+    """
+    base = repo_root(root)
+    entries = parse_external_entries(load_marketplace(base))
+    if entry:
+        entries = [e for e in entries if e["name"] == entry]
+        if not entries:
+            print(f"错误：市场里没有名为 {entry} 的外部聚合条目"
+                  f"（--entry 只接受 github 引用式条目名）")
+            return 2
+    if interactive is None:
+        interactive = sys.stdin.isatty()
+    if not dry_run and not yes and not interactive:
+        print("错误：非交互环境缺 --yes，拒绝执行任何变更；"
+              "先用 --dry-run 预览将做的变更，确认后加 --yes 重跑")
+        return 2
+    validator_script = os.path.join(base, VALIDATOR_REL)
+    plans, failures = plan_updates(
+        entries, fetch_head=fetch_head, fetch_version=fetch_version,
+        fetch_default_ref=fetch_default_ref, get_tarball=get_tarball,
+        validator=validator, validator_script=validator_script, today=today)
+    apply_result = None
+    exit_code = 0
+    if failures:
+        exit_code = 1  # 全链中止：apply_updates 根本不进，仓库文件零改动
+    else:
+        try:
+            apply_result = apply_updates(base, plans, dry_run=dry_run)
+        except (OSError, ValueError) as exc:
+            print(f"错误：写盘阶段失败（此前的写入已尽力而为，请检查仓库状态）: {exc}")
+            return 1
+    print("\n".join(build_update_report(plans, failures, apply_result,
+                                        dry_run=dry_run, market_root=base)))
+    return exit_code
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(
         prog="plugin_updater.py",
-        description="外部聚合插件的更新检查与升级（update 后续票交付）")
+        description="外部聚合插件的更新检查（check）与升级（update）")
     sub = ap.add_subparsers(dest="cmd", required=True)
     ck = sub.add_parser("check", help="检查外部聚合条目：pin 线 + 枢纽同步线 + "
                                       "其他市场副本线")
     ck.add_argument("--root", help="market 仓库根（默认从脚本位置向上推导，"
                                    "或环境变量 MARKET_REPO）")
     ck.add_argument("--hub", help="枢纽 skills 目录（默认 ~/.agents/skills）")
+    up = sub.add_parser("update", help="有新版条目走完仓库写半链：下载新版 tarball -> "
+                                       "plugin-validator 校验门 -> bump pin -> "
+                                       "同步 compat 表格（枢纽实体同步是后续票）")
+    up.add_argument("--root", help="market 仓库根（默认从脚本位置向上推导，"
+                                   "或环境变量 MARKET_REPO）")
+    up.add_argument("--entry", help="只处理指定条目（外部聚合条目名）")
+    up.add_argument("--yes", action="store_true",
+                    help="确认执行变更；非交互环境（非 tty）缺它拒绝一切变更")
+    up.add_argument("--dry-run", action="store_true",
+                    help="只打印将做的变更，不写任何文件（无需 --yes）")
     args = ap.parse_args(argv)
     if args.cmd == "check":
         return cmd_check(args.root, hub_dir=args.hub)
+    if args.cmd == "update":
+        return cmd_update(args.root, entry=args.entry, yes=args.yes,
+                          dry_run=args.dry_run)
     return 2
 
 

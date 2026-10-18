@@ -23,6 +23,21 @@ download_to_file 的 file:// 离线路径、
 接缝全在内存 / tmp：远端 head、版本号、tarball 都是注入的假函数或 tmp 夹具，
 不碰网络（真实网络路径靠真跑一次 check 覆盖，见票 01/02 验收）。
 
+覆盖（票 03 update 仓库写半链）：
+校验门判定（0 error 放行、「缺 .minimax-plugin」对外部引用式条目特判 N/A、
+其余 error 阻断、无「结果:」行的不可识别输出保守拦截）、
+git ls-remote --symref 输出解析（默认分支）、
+marketplace pin bump（pinnedSha/pinnedAt 双字段、note 仅同步内嵌旧 SHA/日期的文字、
+原 dict 不被修改、已同步值重跑零改动、无 pin 条目建基线写齐三字段且键序固定）、
+compat 表格 pin 列同步（精准行替换、其余行列不动、已同步零改动、无该行跳过）、
+plan_updates 编排（bump/建基线/跳过三分、单条目校验失败不中断其余条目、
+head 查询失败进失败通道、无 pin 条目才查默认分支、下载用新 head SHA、
+校验门前树根目录名规范成 plugin.json 的 name——codeload 顶层 <repo>-<sha>
+会让 validator 的 name/目录名检查出假阻断）、
+apply_updates（tmp 假仓库双文件产物正确且保持 CRLF/缩进、dry-run 零写入、
+重复 apply 字节级零改动）、cmd_update（非交互无 --yes 拒绝、校验门失败全链中止
+零写入、--entry 单条目、--dry-run、成功后重跑已最新零改动）。
+
 用法:
     python test_plugin_updater.py
 
@@ -45,20 +60,30 @@ if hasattr(sys.stdout, "reconfigure"):
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from plugin_updater import (
+    apply_pin_bump,
+    apply_updates,
     build_copy_report,
     build_hub_report,
     build_report,
+    build_update_report,
+    cmd_update,
     collect_copy_line,
     decide_exit_code,
     derive_family_members,
     download_to_file,
     judge_entry,
     judge_hub_members,
+    judge_validator_output,
+    normalize_tree_root,
     parse_external_entries,
     parse_ls_remote_output,
+    parse_symref_output,
     parse_upstream_plugin_json,
+    plan_updates,
+    render_pin_cell,
     run_check,
     run_hub_check,
+    sync_compat_table,
 )
 
 
@@ -502,7 +527,550 @@ def test_decide_exit_code_with_hub():
     assert decide_exit_code([mk_result("update-available")], [hub_result()]) == 1
 
 
-# ---------------------------------------------------------------- 枢纽线夹具
+# ---------------------------------------------------------------- update 校验门判定（票 03）
+
+GATE_PASS_OUTPUT = ("== /tmp/tree\n"
+                    "  全部检查通过\n"
+                    "\n"
+                    "结果: 0 error, 2 warning — 通过（warning 请逐条人工确认后发布）\n")
+GATE_NA_OUTPUT = ("== /tmp/tree\n"
+                  "  ERROR   缺少 .minimax-plugin/plugin.json（MiniMax Plugin V1 入口清单）\n"
+                  "  ERROR   skills/x/SKILL.md frontmatter 缺少 name\n"
+                  "结果: 2 error, 1 warning — 未通过，修完 error 才能发布\n")
+
+
+def test_judge_validator_output():
+    """0 error 放行；「缺 .minimax-plugin」对外部条目 N/A、其余 error 阻断；
+    无「结果:」行的不可识别输出保守拦截（0 error 也必须有证据）。"""
+    verdict = judge_validator_output(GATE_PASS_OUTPUT, external_ref=True)
+    assert verdict["passed"] and verdict["blocking"] == [] and verdict["waived"] == []
+
+    verdict = judge_validator_output(GATE_NA_OUTPUT, external_ref=True)
+    assert not verdict["passed"]
+    assert len(verdict["waived"]) == 1 and "缺少 .minimax-plugin" in verdict["waived"][0], \
+        "外部引用式条目的「缺 .minimax-plugin」error 特判 N/A（2026-10-18 手动重 pin 先例）"
+    assert len(verdict["blocking"]) == 1 and "缺少 name" in verdict["blocking"][0], \
+        "其余 error 照常阻断"
+
+    verdict = judge_validator_output(GATE_NA_OUTPUT, external_ref=False)
+    assert len(verdict["blocking"]) == 2 and verdict["waived"] == [], \
+        "非外部引用式条目不豁免任何 error"
+
+    verdict = judge_validator_output("Traceback (most recent call last): ...", external_ref=True)
+    assert not verdict["passed"] and not verdict["recognized"], \
+        "无「结果:」行 = validator 输出不可识别，保守按未通过处理"
+
+
+# ---------------------------------------------------------------- update 默认分支解析（票 03）
+
+def test_parse_symref_output():
+    """`git ls-remote --symref` 首行 ref: refs/heads/<名> 取默认分支短名。"""
+    out = ("ref: refs/heads/main\tHEAD\n"
+           "0f9e8d7c6b5a4444444444444444444444444444\tHEAD\n")
+    assert parse_symref_output(out) == "main"
+    assert parse_symref_output("ref: refs/heads/master\tHEAD\n") == "master"
+    try:
+        parse_symref_output("abc\tHEAD\n")
+        raise AssertionError("没有 ref: 行应报错而不是静默返回")
+    except ValueError:
+        pass
+
+
+# ---------------------------------------------------------------- pin bump 纯决策（票 03）
+
+def alpha_entry():
+    """与真实市场同构的带 pin 条目（note 内嵌旧短 SHA + 旧日期）。"""
+    return {"name": "alpha-skills", "description": "外部聚合带 pin",
+            "source": {"source": "github", "repo": "alpha/one"},
+            "metadata": {"pinnedRef": "main", "pinnedSha": OLD_SHA,
+                         "pinnedAt": OLD_DATE,
+                         "note": f"外部聚合插件（引用式 + pin SHA）；"
+                                 f"旧基线 {OLD_SHA[:7]}（{OLD_DATE}）重 pin，校验 0 error"}}
+
+
+def test_apply_pin_bump_syncs_note_and_idempotent():
+    """bump 双字段 + note 只同步内嵌旧 SHA/日期的文字；原 dict 不动；重跑零改动。"""
+    mp = {"plugins": [alpha_entry(),
+                      {"name": "gamma-skills", "source": {"source": "github", "repo": "g/h"},
+                       "metadata": {"pinnedRef": "main", "pinnedSha": OLD_SHA,
+                                    "pinnedAt": OLD_DATE,
+                                    "note": f"全串 pin {OLD_SHA}，人工核对过"}}]}
+    new_mp, changed = apply_pin_bump(mp, "alpha-skills", NEW_SHA, NEW_DATE)
+    assert changed
+    meta = new_mp["plugins"][0]["metadata"]
+    assert meta["pinnedSha"] == NEW_SHA and meta["pinnedAt"] == NEW_DATE
+    assert meta["pinnedRef"] == "main"
+    assert meta["note"] == (f"外部聚合插件（引用式 + pin SHA）；"
+                            f"旧基线 {NEW_SHA[:7]}（{NEW_DATE}）重 pin，校验 0 error"), \
+        "note 里内嵌的旧短 SHA 与旧日期被替换，其余文字原样保留"
+    assert mp["plugins"][0]["metadata"]["pinnedSha"] == OLD_SHA, "原 marketplace dict 不被修改"
+
+    new_mp2, changed2 = apply_pin_bump(new_mp, "alpha-skills", NEW_SHA, NEW_DATE)
+    assert not changed2, "对已同步条目重跑（旧值==新值）零改动"
+
+    # 内嵌全串 SHA 的 note 同步为全串新 SHA
+    new_mp3, _ = apply_pin_bump(mp, "gamma-skills", NEW_SHA, NEW_DATE)
+    assert new_mp3["plugins"][1]["metadata"]["note"] == f"全串 pin {NEW_SHA}，人工核对过"
+
+
+def test_apply_pin_bump_baseline_creates_metadata():
+    """无 pin 条目建基线：新建 metadata 写齐 pinnedRef/pinnedSha/pinnedAt（键序固定）。"""
+    mp = {"plugins": [{"name": "beta-skills", "description": "外部聚合无 pin",
+                       "source": {"source": "github", "repo": "beta/two"}}]}
+    new_mp, changed = apply_pin_bump(mp, "beta-skills", BASE_SHA, NEW_DATE, new_ref="main")
+    assert changed
+    meta = new_mp["plugins"][0]["metadata"]
+    assert meta == {"pinnedRef": "main", "pinnedSha": BASE_SHA, "pinnedAt": NEW_DATE}
+    assert list(meta.keys()) == ["pinnedRef", "pinnedSha", "pinnedAt"], \
+        "基线三字段按 pinnedRef/pinnedSha/pinnedAt 的顺序写（对齐现有条目排版）"
+
+
+# ---------------------------------------------------------------- compat 表格同步（票 03）
+
+def test_render_pin_cell():
+    """pin 列格式 `main `<短sha>`（日期，v版本）`；版本号未知时省略版本段。"""
+    assert render_pin_cell("main", NEW_SHA, NEW_DATE, "2.0.0") == \
+        f"main `{NEW_SHA[:7]}`（{NEW_DATE}，v2.0.0）"
+    assert render_pin_cell("main", NEW_SHA, NEW_DATE, None) == \
+        f"main `{NEW_SHA[:7]}`（{NEW_DATE}）"
+
+
+def make_compat_text():
+    """与真实 docs/plugin-compatibility.md「外部聚合插件」节同构的最小表格。"""
+    return ("# 兼容性\n\n## 外部聚合插件（引用式 + pin SHA）\n\n"
+            "| 插件 | 上游 | pin | 三平台 |\n"
+            "|---|---|---|---|\n"
+            f"| alpha-skills | [alpha/one](https://github.com/alpha/one) "
+            f"| main `{OLD_SHA[:7]}`（{OLD_DATE}，v1.0.0） | ✅✅✅ 纯 skills |\n"
+            "| beta-skills | [beta/two](https://github.com/beta/two) | 无 pin "
+            "| ✅✅✅ 纯 skills |\n\n"
+            "入库流程：clone → 校验 → 本表标注 → marketplace.json 加条目。\n")
+
+
+def test_sync_compat_table():
+    """只替换该条目行的 pin 列（第 3 列）；上游列/三平台列/其余行不动；幂等。"""
+    text = make_compat_text()
+    cell = f"main `{NEW_SHA[:7]}`（{NEW_DATE}，v2.0.0）"
+    new_text, changed = sync_compat_table(text, "alpha-skills", cell)
+    assert changed
+    assert f"| alpha-skills | [alpha/one](https://github.com/alpha/one) | {cell} " \
+           "| ✅✅✅ 纯 skills |" in new_text, "pin 列换新，同行其余列原样"
+    assert "无 pin" in new_text, "其余条目的行不动"
+    assert "入库流程" in new_text, "表格外的正文不动"
+
+    again, changed2 = sync_compat_table(new_text, "alpha-skills", cell)
+    assert not changed2 and again == new_text, "已同步的行重跑零改动"
+
+    _, changed3 = sync_compat_table(text, "gamma-skills", cell)
+    assert not changed3, "表里没有该条目行 -> 不改动（由调用方注明跳过）"
+
+
+# ---------------------------------------------------------------- update 编排（票 03）
+
+OLD_SHA = "a1b2c3d4e5f6000000000000000000000000000"
+NEW_SHA = "f6e5d4c3b2a1999999999999999999999999999"
+BASE_SHA = "0f9e8d7c6b5a4444444444444444444444444444"
+OLD_DATE = "2026-01-02"
+NEW_DATE = "2026-10-19"
+
+
+def make_update_entries():
+    """一 bump 一建基线，与真实市场外部条目同构。"""
+    return [
+        {"name": "alpha-skills", "repo": "alpha/one", "pinned_ref": "main",
+         "pinned_sha": OLD_SHA},
+        {"name": "beta-skills", "repo": "beta/two", "pinned_ref": None,
+         "pinned_sha": None},
+    ]
+
+
+def make_update_seams(tar_path, validator_output=GATE_PASS_OUTPUT, head_map=None):
+    """update 全套假接缝：head/版本号/默认分支/tarball/validator 全注入，调用可观测。
+
+    返回 (calls, seams_dict)：seams_dict 的键与 plan_updates / cmd_update 的
+    注入参数同名，可直接 ** 解包。
+    """
+    calls = {"tar": [], "validator": [], "symref": []}
+    heads = head_map or {"alpha/one": NEW_SHA, "beta/two": BASE_SHA}
+
+    def fetch_head(repo, ref):
+        return heads[repo]
+
+    def fetch_version(repo, sha):
+        return "2.0.0" if repo == "alpha/one" else "0.9.0"
+
+    def fetch_default_ref(repo):
+        calls["symref"].append(repo)
+        return "main"
+
+    def get_tarball(repo, sha, dest_dir, timeout=120):
+        calls["tar"].append((repo, sha))
+        return tar_path
+
+    def validator(tree):
+        calls["validator"].append(tree)
+        assert os.path.isdir(tree), "校验门拿到的应是解包后真实存在的树"
+        return validator_output
+
+    return calls, {"fetch_head": fetch_head, "fetch_version": fetch_version,
+                   "fetch_default_ref": fetch_default_ref,
+                   "get_tarball": get_tarball, "validator": validator}
+
+
+def test_plan_updates_bump_and_baseline():
+    """bump/建基线两类计划齐备：下载用新 head SHA、只有无 pin 条目查默认分支、全过校验门。"""
+    with tempfile.TemporaryDirectory() as tmp:
+        tar_path, _tree = make_pin_tarball(tmp, top_name="skills-new")
+        calls, seams = make_update_seams(tar_path)
+        plans, failures = plan_updates(make_update_entries(), today=NEW_DATE, **seams)
+        assert failures == []
+        by = {p["name"]: p for p in plans}
+        assert by["alpha-skills"]["action"] == "bump"
+        assert by["alpha-skills"]["new_sha"] == NEW_SHA
+        assert by["alpha-skills"]["old_sha"] == OLD_SHA
+        assert by["alpha-skills"]["version"] == "2.0.0"
+        assert by["beta-skills"]["action"] == "baseline"
+        assert by["beta-skills"]["new_sha"] == BASE_SHA
+        assert by["beta-skills"]["new_ref"] == "main", "建基线要带默认分支"
+        assert by["beta-skills"]["date"] == NEW_DATE
+        assert calls["tar"] == [("alpha/one", NEW_SHA), ("beta/two", BASE_SHA)], \
+            "tarball 按新 head SHA 下载（校验门与实体同步共用一次下载）"
+        assert calls["symref"] == ["beta/two"], "只有无 pin 条目才查默认分支"
+        assert len(calls["validator"]) == 2, "两条目都过同一校验门"
+
+
+def test_plan_updates_gate_failure_isolated():
+    """校验门未通过 -> 该条目进失败通道（N/A 项不算阻断），其余条目照常出计划。"""
+    with tempfile.TemporaryDirectory() as tmp:
+        tar_path, _tree = make_pin_tarball(tmp, top_name="skills-new")
+        _calls, seams = make_update_seams(tar_path)
+        gate_calls = {"n": 0}
+
+        def fail_first_gate(tree):
+            gate_calls["n"] += 1
+            # alpha（第一个进门的）校验不过，beta 照常通过——混合结果
+            return GATE_NA_OUTPUT if gate_calls["n"] == 1 else GATE_PASS_OUTPUT
+
+        seams["validator"] = fail_first_gate
+        plans, failures = plan_updates(make_update_entries(), today=NEW_DATE, **seams)
+        assert [p["name"] for p in plans] == ["beta-skills"], \
+            "单条目校验失败不中断其余条目的计划"
+        assert len(failures) == 1 and failures[0]["stage"] == "gate"
+        assert failures[0]["name"] == "alpha-skills"
+        blocking = failures[0]["detail"]
+        assert any("缺少 name" in e for e in blocking), "真实 error 进阻断清单"
+        assert not any("缺少 .minimax-plugin" in e for e in blocking), \
+            "「缺 .minimax-plugin」N/A 不进阻断清单"
+
+
+def test_plan_updates_skips_up_to_date():
+    """pin==head 的条目出 skip 计划：不下载 tarball、不过校验门（幂等重跑的基础）。"""
+    with tempfile.TemporaryDirectory() as tmp:
+        tar_path, _tree = make_pin_tarball(tmp, top_name="skills-new")
+        calls, seams = make_update_seams(
+            tar_path, head_map={"alpha/one": OLD_SHA, "beta/two": BASE_SHA})
+        plans, failures = plan_updates(make_update_entries(), today=NEW_DATE, **seams)
+        assert failures == []
+        by = {p["name"]: p["action"] for p in plans}
+        assert by["alpha-skills"] == "skip"
+        assert by["beta-skills"] == "baseline"
+        assert calls["tar"] == [("beta/two", BASE_SHA)], "已最新条目不下载"
+        assert len(calls["validator"]) == 1, "已最新条目不过校验门"
+
+
+def test_plan_updates_head_failure_isolated():
+    """单条目 head 查询失败 -> 失败通道（stage=head），其余条目照常计划。"""
+    with tempfile.TemporaryDirectory() as tmp:
+        tar_path, _tree = make_pin_tarball(tmp, top_name="skills-new")
+        calls, seams = make_update_seams(tar_path)
+
+        def flaky_head(repo, ref):
+            if repo == "alpha/one":
+                raise RuntimeError("网络断了")
+            return BASE_SHA
+
+        seams["fetch_head"] = flaky_head
+        plans, failures = plan_updates(make_update_entries(), today=NEW_DATE, **seams)
+        assert [p["name"] for p in plans] == ["beta-skills"]
+        assert len(failures) == 1 and failures[0]["stage"] == "head"
+        assert failures[0]["name"] == "alpha-skills" and "网络断了" in failures[0]["error"]
+        assert calls["tar"] == [("beta/two", BASE_SHA)], "失败条目不进入下载"
+
+
+def test_normalize_tree_root_renames_to_plugin_name():
+    """codeload 顶层目录是 <repo>-<sha>，校验门前把树根改名为 plugin.json 的
+    name（对齐手动重 pin 先例里 git clone 的目录名），否则出假阻断 error。"""
+    with tempfile.TemporaryDirectory() as tmp:
+        top = os.path.join(tmp, "obsidian-skills-3ccff5338ea7")
+        write_text(os.path.join(top, ".claude-plugin", "plugin.json"),
+                   '{"name": "obsidian", "version": "1.0.1"}')
+        write_text(os.path.join(top, "SKILL.md"), "---\nname: x\n---\nbody\n")
+        renamed = normalize_tree_root(top)
+        assert os.path.basename(renamed) == "obsidian"
+        assert os.path.isdir(renamed) and not os.path.exists(top), "原目录已改名"
+        assert os.path.isfile(os.path.join(renamed, ".claude-plugin", "plugin.json"))
+
+        # 已对齐 / plugin.json 缺失 / 损坏 -> 原样返回（让校验门报真正的 error）
+        assert normalize_tree_root(renamed) == renamed
+        bare = os.path.join(tmp, "skills-49dd158d1076")
+        os.makedirs(bare)
+        assert normalize_tree_root(bare) == bare
+        broken = os.path.join(tmp, "skills-broken")
+        os.makedirs(broken)
+        write_text(os.path.join(broken, ".claude-plugin", "plugin.json"), "<html>")
+        assert normalize_tree_root(broken) == broken
+
+
+def test_plan_updates_gate_receives_normalized_tree():
+    """校验门拿到的树根目录名 == plugin.json 的 name（端到端走 tarball 解包链）。"""
+    with tempfile.TemporaryDirectory() as tmp:
+        # 仿 codeload 形态：顶层 <repo>-<sha>，内含 plugin.json(name=one) + skills/
+        top = os.path.join(tmp, "one-abcdef1234")
+        write_text(os.path.join(top, ".claude-plugin", "plugin.json"),
+                   '{"name": "one", "version": "2.0.0"}')
+        write_text(os.path.join(top, "skills", "engineering", "tdd", "SKILL.md"),
+                   "---\nname: tdd\n---\nbody\n")
+        tar_path = os.path.join(tmp, "new.tar.gz")
+        with tarfile.open(tar_path, "w:gz") as tf:
+            tf.add(top, arcname="one-abcdef1234")
+        captured = []
+
+        def validator(tree):
+            captured.append(tree)
+            return GATE_PASS_OUTPUT
+
+        entries = [{"name": "alpha-skills", "repo": "alpha/one",
+                    "pinned_ref": "main", "pinned_sha": OLD_SHA}]
+        plans, failures = plan_updates(
+            entries, fetch_head=lambda repo, ref: NEW_SHA,
+            fetch_version=lambda repo, sha: "2.0.0",
+            get_tarball=lambda repo, sha, dest_dir, timeout=120: tar_path,
+            validator=validator, today=NEW_DATE)
+        assert failures == [] and plans[0]["action"] == "bump"
+        assert os.path.basename(captured[0]) == "one", \
+            "校验门收到的是改名后的树根（name 与目录名一致，不出假阻断）"
+
+
+# ---------------------------------------------------------------- update 写盘（票 03）
+
+def make_bump_plans():
+    """手搓两条计划（bump + 建基线），供 apply_updates 的产物用例复用。"""
+    return [
+        {"action": "bump", "name": "alpha-skills", "repo": "alpha/one", "ref": "main",
+         "old_sha": OLD_SHA, "new_sha": NEW_SHA, "new_ref": None, "date": NEW_DATE,
+         "version": "2.0.0", "waived": []},
+        {"action": "baseline", "name": "beta-skills", "repo": "beta/two", "ref": "HEAD",
+         "old_sha": None, "new_sha": BASE_SHA, "new_ref": "main", "date": NEW_DATE,
+         "version": "0.9.0", "waived": []},
+    ]
+
+
+def read_bytes(path):
+    with open(path, "rb") as f:
+        return f.read()
+
+
+def fake_repo_paths(root):
+    return (os.path.join(root, ".claude-plugin", "marketplace.json"),
+            os.path.join(root, "docs", "plugin-compatibility.md"))
+
+
+def test_apply_updates_writes_both_files():
+    """tmp 假仓库：双文件产物正确——双字段 bump + note 同步、基线三字段、
+    compat 两行 pin 列同步；CRLF/LF 与 2 空格缩进保持；本地条目不受影响。"""
+    with tempfile.TemporaryDirectory() as tmp:
+        root = make_fake_repo(tmp)
+        mp_path, compat_path = fake_repo_paths(root)
+        res = apply_updates(root, make_bump_plans())
+        assert res["marketplace"]["written"] and res["compat"]["written"]
+
+        mp_bytes = read_bytes(mp_path)
+        assert b"\r\n" in mp_bytes and not mp_bytes.startswith(b"\xef\xbb\xbf"), \
+            "marketplace.json 的 CRLF 行尾保持、不引入 BOM"
+        assert mp_bytes.endswith(b"\r\n"), "文件末尾换行保持"
+        assert b"\r\n  \"plugins\"" in mp_bytes, "2 空格缩进排版保持"
+        data = json.loads(mp_bytes.decode("utf-8"))
+        alpha = next(p for p in data["plugins"] if p["name"] == "alpha-skills")
+        assert alpha["metadata"]["pinnedSha"] == NEW_SHA
+        assert alpha["metadata"]["pinnedAt"] == NEW_DATE
+        assert alpha["metadata"]["note"] == (f"外部聚合插件（引用式 + pin SHA）；"
+                                             f"旧基线 {NEW_SHA[:7]}（{NEW_DATE}）重 pin，"
+                                             f"校验 0 error")
+        beta = next(p for p in data["plugins"] if p["name"] == "beta-skills")
+        assert list(beta["metadata"].keys()) == ["pinnedRef", "pinnedSha", "pinnedAt"]
+        assert beta["metadata"]["pinnedSha"] == BASE_SHA
+        local = next(p for p in data["plugins"] if p["name"] == "local-plugin")
+        assert "metadata" not in local, "本地条目不受影响"
+
+        compat_text = read_bytes(compat_path).decode("utf-8")
+        assert b"\r\n" not in read_bytes(compat_path), "compat 文档 LF 行尾保持"
+        assert f"main `{NEW_SHA[:7]}`（{NEW_DATE}，v2.0.0）" in compat_text
+        assert f"main `{BASE_SHA[:7]}`（{NEW_DATE}，v0.9.0）" in compat_text, \
+            "建基线条目的 pin 列同步"
+        assert "无 pin" not in compat_text.split("## 外部聚合插件")[1].split("\n\n")[1], \
+            "表格里不再有未治理条目"
+
+
+def test_apply_updates_dry_run_zero_write():
+    """--dry-run 语义：算出将发生的变更但不落一个字节。"""
+    with tempfile.TemporaryDirectory() as tmp:
+        root = make_fake_repo(tmp)
+        mp_path, compat_path = fake_repo_paths(root)
+        before = (read_bytes(mp_path), read_bytes(compat_path))
+        res = apply_updates(root, make_bump_plans(), dry_run=True)
+        assert res["marketplace"]["changed"] and not res["marketplace"]["written"]
+        assert res["compat"]["changed"] and not res["compat"]["written"]
+        assert (read_bytes(mp_path), read_bytes(compat_path)) == before, "零写入"
+
+
+def test_apply_updates_idempotent_byte_level():
+    """同一批计划重复 apply：第二遍算不出变更、不写盘、字节不变。"""
+    with tempfile.TemporaryDirectory() as tmp:
+        root = make_fake_repo(tmp)
+        mp_path, compat_path = fake_repo_paths(root)
+        apply_updates(root, make_bump_plans())
+        snapshot = (read_bytes(mp_path), read_bytes(compat_path))
+        res2 = apply_updates(root, make_bump_plans())
+        assert not res2["marketplace"]["changed"] and not res2["marketplace"]["written"]
+        assert not res2["compat"]["changed"] and not res2["compat"]["written"]
+        assert (read_bytes(mp_path), read_bytes(compat_path)) == snapshot, "字节级零改动"
+
+
+# ---------------------------------------------------------------- update 命令层（票 03）
+
+def test_cmd_update_end_to_end_idempotent():
+    """假仓库全链：成功 bump 双文件 -> 重跑已最新零下载零写入（命令级幂等）。"""
+    with tempfile.TemporaryDirectory() as tmp:
+        root = make_fake_repo(tmp)
+        tar_path, _tree = make_pin_tarball(tmp, top_name="skills-new")
+        calls, seams = make_update_seams(tar_path)
+        rc = cmd_update(root, yes=True, today=NEW_DATE, **seams)
+        assert rc == 0, "成功更新退出码 0"
+        mp_path, compat_path = fake_repo_paths(root)
+        assert NEW_SHA[:7] in read_bytes(compat_path).decode("utf-8")
+        snapshot = (read_bytes(mp_path), read_bytes(compat_path))
+
+        calls["tar"].clear()
+        calls["validator"].clear()
+        rc2 = cmd_update(root, yes=True, today=NEW_DATE, **seams)
+        assert rc2 == 0, "重跑（已最新）也退出码 0"
+        assert calls["tar"] == [] and calls["validator"] == [], \
+            "已最新条目不下载、不校验"
+        assert (read_bytes(mp_path), read_bytes(compat_path)) == snapshot, \
+            "重跑零改动（幂等）"
+
+
+def test_cmd_update_guard_noninteractive():
+    """非交互环境无 --yes -> 退出码 2，拒绝执行任何变更（连网络都不碰）。"""
+    with tempfile.TemporaryDirectory() as tmp:
+        root = make_fake_repo(tmp)
+        tar_path, _tree = make_pin_tarball(tmp, top_name="skills-new")
+        calls, seams = make_update_seams(tar_path)
+        mp_path, compat_path = fake_repo_paths(root)
+        before = (read_bytes(mp_path), read_bytes(compat_path))
+        rc = cmd_update(root, interactive=False, yes=False, today=NEW_DATE, **seams)
+        assert rc == 2
+        assert calls == {"tar": [], "validator": [], "symref": []}, \
+            "守卫在任何外部访问之前触发"
+        assert (read_bytes(mp_path), read_bytes(compat_path)) == before, "零写入"
+
+
+def test_cmd_update_gate_failure_aborts_zero_write():
+    """校验门有 error -> 退出码 1、全链中止：beta 即便过了门也不写（全或无）。"""
+    with tempfile.TemporaryDirectory() as tmp:
+        root = make_fake_repo(tmp)
+        tar_path, _tree = make_pin_tarball(tmp, top_name="skills-new")
+        _calls, seams = make_update_seams(tar_path)
+        gate_calls = {"n": 0}
+
+        def fail_first_gate(tree):
+            gate_calls["n"] += 1
+            # alpha（有 pin 的，第一个进门）校验不过；beta 过门
+            return GATE_NA_OUTPUT if gate_calls["n"] == 1 else GATE_PASS_OUTPUT
+
+        seams["validator"] = fail_first_gate
+        mp_path, compat_path = fake_repo_paths(root)
+        before = (read_bytes(mp_path), read_bytes(compat_path))
+        rc = cmd_update(root, yes=True, today=NEW_DATE, **seams)
+        assert rc == 1
+        assert (read_bytes(mp_path), read_bytes(compat_path)) == before, \
+            "任一校验失败 -> 全链中止、仓库文件零改动"
+        data = json.loads(read_bytes(mp_path).decode("utf-8"))
+        beta = next(p for p in data["plugins"] if p["name"] == "beta-skills")
+        assert "metadata" not in beta, "其他条目即便过了门也不写（全或无）"
+
+
+def test_cmd_update_dry_run_zero_write():
+    """--dry-run 非交互可跑（不写入就不需要 --yes），退出码 0、零写入。"""
+    with tempfile.TemporaryDirectory() as tmp:
+        root = make_fake_repo(tmp)
+        tar_path, _tree = make_pin_tarball(tmp, top_name="skills-new")
+        calls, seams = make_update_seams(tar_path)
+        mp_path, compat_path = fake_repo_paths(root)
+        before = (read_bytes(mp_path), read_bytes(compat_path))
+        rc = cmd_update(root, dry_run=True, interactive=False, today=NEW_DATE, **seams)
+        assert rc == 0
+        assert len(calls["validator"]) == 2, "dry-run 仍走完整校验门（报告才可信）"
+        assert (read_bytes(mp_path), read_bytes(compat_path)) == before, "零写入"
+
+
+def test_cmd_update_entry_filter():
+    """--entry 只影响指定条目：alpha bump 落盘，beta 的 marketplace/compat 原样。"""
+    with tempfile.TemporaryDirectory() as tmp:
+        root = make_fake_repo(tmp)
+        tar_path, _tree = make_pin_tarball(tmp, top_name="skills-new")
+        _calls, seams = make_update_seams(tar_path)
+        rc = cmd_update(root, entry="alpha-skills", yes=True, today=NEW_DATE, **seams)
+        assert rc == 0
+        mp_path, compat_path = fake_repo_paths(root)
+        data = json.loads(read_bytes(mp_path).decode("utf-8"))
+        alpha = next(p for p in data["plugins"] if p["name"] == "alpha-skills")
+        beta = next(p for p in data["plugins"] if p["name"] == "beta-skills")
+        assert alpha["metadata"]["pinnedSha"] == NEW_SHA
+        assert "metadata" not in beta, "未指定条目不建基线"
+        compat_beta = [ln for ln in read_bytes(compat_path).decode("utf-8").splitlines()
+                       if ln.startswith("| beta-skills")]
+        assert compat_beta == ["| beta-skills | [beta/two](https://github.com/beta/two) "
+                               "| 无 pin | ✅✅✅ 纯 skills |"], "未指定条目的表格行原样"
+
+
+def test_cmd_update_entry_unknown():
+    """--entry 给了市场里不存在的名字 -> 退出码 2。"""
+    with tempfile.TemporaryDirectory() as tmp:
+        root = make_fake_repo(tmp)
+        tar_path, _tree = make_pin_tarball(tmp, top_name="skills-new")
+        _calls, seams = make_update_seams(tar_path)
+        rc = cmd_update(root, entry="no-such", yes=True, today=NEW_DATE, **seams)
+        assert rc == 2
+
+
+def test_build_update_report():
+    """报告措辞：计划/跳过/失败（含阻断明细）/写入与 dry-run 标注。"""
+    plans = make_bump_plans() + [
+        {"action": "skip", "name": "gamma-skills", "repo": "g/h", "ref": "main",
+         "old_sha": NEW_SHA, "new_sha": NEW_SHA, "new_ref": None, "date": None,
+         "version": None, "waived": []}]
+    text = "\n".join(build_update_report(plans, [], None, market_root="R"))
+    assert "bump" in text and "建基线" in text and "已最新" in text
+    assert "f6e5d4c" in text and "0f9e8d7" in text, "计划里给新旧短 SHA"
+
+    failures = [{"name": "alpha-skills", "repo": "alpha/one", "stage": "gate",
+                 "error": "校验门未通过（1 error）",
+                 "detail": ["skills/x/SKILL.md frontmatter 缺少 name"]}]
+    text2 = "\n".join(build_update_report(plans, failures, None, market_root="R"))
+    assert "全链中止" in text2 and "零写入" in text2
+    assert "缺少 name" in text2, "阻断 error 明细进报告"
+
+    applied = {"marketplace": {"changed": True, "written": True},
+               "compat": {"changed": True, "written": True, "skipped": []}}
+    text3 = "\n".join(build_update_report(plans, [], applied, market_root="R"))
+    assert "已写入" in text3
+    text4 = "\n".join(build_update_report(plans, [], applied, dry_run=True,
+                                          market_root="R"))
+    assert "dry-run" in text4 and "未写入" in text4
+
+
+
 
 def write_text(path, text):
     """小工具：按 UTF-8 + LF 落一个文本文件（目录不存在则建）。"""
@@ -566,6 +1134,33 @@ def make_pinned_entries():
         {"name": "obsidian-skills", "repo": "kepano/obsidian-skills",
          "pinned_ref": None, "pinned_sha": None},
     ]
+
+
+def make_fake_repo(tmp):
+    """tmp 假 market 仓库：marketplace.json（CRLF、2 空格缩进，带 pin/无 pin/本地
+    三种条目）+ compat 文档（LF，外部聚合插件表格）+ plugins/ 目录
+    （repo_root 的定位判据是 marketplace.json + plugins/，形态对齐真实仓库）。
+    行尾形态对齐真实仓库（marketplace.json CRLF / compat LF）。"""
+    root = os.path.join(tmp, "market")
+    os.makedirs(os.path.join(root, ".claude-plugin"))
+    os.makedirs(os.path.join(root, "docs"))
+    os.makedirs(os.path.join(root, "plugins"))
+    mp = {
+        "name": "fake-market",
+        "plugins": [
+            alpha_entry(),
+            {"name": "beta-skills", "description": "外部聚合无 pin",
+             "source": {"source": "github", "repo": "beta/two"}},
+            {"name": "local-plugin", "description": "本地条目",
+             "source": "./plugins/local-plugin"},
+        ],
+    }
+    body = json.dumps(mp, ensure_ascii=False, indent=2) + "\n"
+    with open(os.path.join(root, ".claude-plugin", "marketplace.json"), "wb") as f:
+        f.write(body.replace("\n", "\r\n").encode("utf-8"))
+    with open(os.path.join(root, "docs", "plugin-compatibility.md"), "wb") as f:
+        f.write(make_compat_text().encode("utf-8"))
+    return root
 
 
 # ---------------------------------------------------------------- 副本线夹具
@@ -665,6 +1260,28 @@ TESTS = [
     test_build_hub_report,
     test_build_copy_report,
     test_decide_exit_code_with_hub,
+    test_judge_validator_output,
+    test_parse_symref_output,
+    test_apply_pin_bump_syncs_note_and_idempotent,
+    test_apply_pin_bump_baseline_creates_metadata,
+    test_render_pin_cell,
+    test_sync_compat_table,
+    test_plan_updates_bump_and_baseline,
+    test_plan_updates_gate_failure_isolated,
+    test_plan_updates_skips_up_to_date,
+    test_plan_updates_head_failure_isolated,
+    test_normalize_tree_root_renames_to_plugin_name,
+    test_plan_updates_gate_receives_normalized_tree,
+    test_apply_updates_writes_both_files,
+    test_apply_updates_dry_run_zero_write,
+    test_apply_updates_idempotent_byte_level,
+    test_cmd_update_end_to_end_idempotent,
+    test_cmd_update_guard_noninteractive,
+    test_cmd_update_gate_failure_aborts_zero_write,
+    test_cmd_update_dry_run_zero_write,
+    test_cmd_update_entry_filter,
+    test_cmd_update_entry_unknown,
+    test_build_update_report,
 ]
 
 
