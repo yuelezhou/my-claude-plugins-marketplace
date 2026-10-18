@@ -77,4 +77,4 @@
 |---|---|---|---|
 | mattpocock-skills | [mattpocock/skills](https://github.com/mattpocock/skills) | main `49dd158`（2026-10-18，v1.3.1） | ✅✅✅ 纯 skills |
 
-入库流程：clone → `plugin-validator --standalone` 0 error → 本表标注 → marketplace.json 加条目（github source + metadata.pinnedSha）。更新流程：重取 SHA → 重跑校验 → 更新 pin。
+入库流程：clone → `plugin-validator --standalone` 0 error → 本表标注 → marketplace.json 加条目（github source + metadata.pinnedSha）。更新流程：**已由 plugin-validator 同仓库的 plugin-updater 插件自动化**（`python plugins/plugin-updater/skills/plugin-updater/scripts/plugin_updater.py update --yes`，先 `--dry-run` 预览）。政策要点：bump 前必过 `--standalone` 校验门（0 error 才写盘，「缺 .minimax-plugin」对外部引用式条目 N/A）；族成员由 pin 处上游 `skills/` 目录清单动态派生（engineering/productivity/misc 三分类，deprecated/in-progress 永不装入）；上游已移除的 skill 须确认后连枢纽实体与链接层一起删除（非交互须 `--delete-removed`）。完整契约见 `plugins/plugin-updater/skills/plugin-updater/references/update-contract.md`。
