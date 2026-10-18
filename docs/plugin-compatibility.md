@@ -75,6 +75,6 @@
 
 | 插件 | 上游 | pin | 三平台 |
 |---|---|---|---|
-| mattpocock-skills | [mattpocock/skills](https://github.com/mattpocock/skills) | main `484efcbe`（2026-09-29） | ✅✅✅ 纯 skills |
+| mattpocock-skills | [mattpocock/skills](https://github.com/mattpocock/skills) | main `49dd158`（2026-10-18，v1.3.1） | ✅✅✅ 纯 skills |
 
 入库流程：clone → `plugin-validator --standalone` 0 error → 本表标注 → marketplace.json 加条目（github source + metadata.pinnedSha）。更新流程：重取 SHA → 重跑校验 → 更新 pin。

@@ -27,7 +27,7 @@
 | mineru-book-ocr | 书籍 PDF → MinerU 云端 OCR → 读书笔记流水线（拆分→提交→等待→收集→归档） |
 | word-frequency | 英文词频统计，HTML / Anki / CSV 输出，自带词典数据 |
 | skill-distributor | 本地 skill 分发与台账核对（link / status / audit / dupes / clean / link-plugins） |
-| **mattpocock-skills**（外部） | 聚合条目，github: mattpocock/skills，pin main `484efcbe`——本地无源码 |
+| **mattpocock-skills**（外部） | 聚合条目，github: mattpocock/skills，pin main `49dd158`（v1.3.1）——本地无源码 |
 | gitee-mcp | Gitee 云端 Remote MCP 封装（`.mcp.json` 给 Claude Code / `mcp.json` 给 MiniMax，需 `GITEE_ACCESS_TOKEN` 环境变量） |
 | plugin-validator | **其他插件发布前必须运行的验证工具**（`check_plugin.py`，0 error 才能发布） |
 | obsidian-skills | 外部插件（github: kepano/obsidian-skills），本地无源码 |

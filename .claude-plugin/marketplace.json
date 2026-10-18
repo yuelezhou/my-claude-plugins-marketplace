@@ -68,9 +68,9 @@
       },
       "metadata": {
         "pinnedRef": "main",
-        "pinnedSha": "484efcbe67ae1e558b4df95bfc90135b7b0c9df8",
-        "pinnedAt": "2026-09-29",
-        "note": "外部聚合插件（引用式 + pin SHA）；入库前已过 plugin-validator --standalone（纯 skills，三平台全兼容）"
+        "pinnedSha": "49dd158d1076134a641b33efb035946536778336",
+        "pinnedAt": "2026-10-18",
+        "note": "外部聚合插件（引用式 + pin SHA）；1.3.1 重 pin。--standalone 校验除「缺 .minimax-plugin」（外部引用式条目不适用：本地无源码、不分发给 MiniMax）外 0 error；2 个 warning 为上游内容（deprecated 归档目录、pr 的 description 偏短），不改上游"
       }
     },
     {

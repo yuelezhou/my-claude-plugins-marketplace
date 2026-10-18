@@ -25,7 +25,7 @@
 
 | skill | 安装方式 |
 |---|---|
-| mattpocock 工程套件（grilling、tdd、implement、to-spec、to-tickets、triage、wayfinder、code-review 等约 26 个） | 安装 mattpocock-skills 插件，或跑 `/setup-matt-pocock-skills` |
+| mattpocock 工程套件（grilling、tdd、implement、to-spec、to-tickets、triage、wayfinder、code-review、pr、retro 等 27 个；v1.3.1 起上游移除了 resolving-merge-conflicts） | 安装 mattpocock-skills 插件，或跑 `/setup-matt-pocock-skills` |
 | git-guardrails-claude-code | 来源待补 |
 | migrate-to-shoehorn | 来源待补 |
 | scaffold-exercises | 来源待补 |
