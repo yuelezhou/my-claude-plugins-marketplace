@@ -1,0 +1,21 @@
+{
+  "schemaVersion": 1,
+  "name": "plugin-updater",
+  "displayName": "外部插件更新检查",
+  "version": "1.0.0",
+  "description": "外部聚合插件的更新检查工具：git ls-remote 比对市场 pin SHA 与上游 head、附上游版本号，无 pin 条目报「无基线」；全部最新退出码 0，有更新或无基线退出码 1",
+  "author": "yuelezhou",
+  "icon": "icon.png",
+  "darkIcon": "icon-dark.png",
+  "category": "Code",
+  "exampleQueries": [
+    "检查一下外部插件有没有新版本",
+    "mattpocock skills 上游更新了吗",
+    "外部聚合插件的 pin 落后了没"
+  ],
+  "apps": [],
+  "mcpServers": [],
+  "skills": [
+    "skills/plugin-updater/SKILL.md"
+  ]
+}

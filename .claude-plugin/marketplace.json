@@ -77,6 +77,11 @@
       "name": "gitee-mcp",
       "description": "Gitee 官方 MCP Server 的 Claude Code 插件封装：走 Gitee 云端 Remote MCP，免安装，AI 可直接读写仓库、文件、Issue、Pull Request、发行版与通知",
       "source": "./plugins/gitee-mcp"
+    },
+    {
+      "name": "plugin-updater",
+      "description": "外部聚合插件的更新检查：git ls-remote 比对市场 pin SHA 与上游 head、附上游版本号，无 pin 条目报「无基线」；全部最新退出码 0，有更新或无基线退出码 1",
+      "source": "./plugins/plugin-updater"
     }
   ]
 }
