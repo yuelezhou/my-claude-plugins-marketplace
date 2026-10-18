@@ -9,7 +9,7 @@ wordfreq.py — 词频统计（英语学习向）
 
 流程: 适配器(材料→材料块) → 剔噪 → 剥 markdown 语法 → 逐行二分出英材
       → 分句分词 → 词形归并(running→run) → 词频统计 → 词典短语匹配
-      → 等级标注(中考..GRE/专四/专八) + COCA 排名 → 默认隐藏已会词和基础词
+      → 等级标注(中考..GRE/专四/专八) + COCA 排名 → 默认隐藏已会词、基础词(中考/高考/CET4-6)、专名与单字母噪声
 输出: HTML 交互报告 / Anki 导入 txt / CSV / Markdown 摘要
 """
 import argparse
@@ -35,7 +35,7 @@ LEVEL_NAMES = {
     "tem4": "专四", "tem8": "专八", "ky": "考研", "ielts": "雅思",
     "toefl": "托福", "gre": "GRE",
 }
-BASIC_LEVELS = {"zk", "gk", "cet4"}  # 基础三档：默认隐藏
+BASIC_LEVELS = {"zk", "gk", "cet4", "cet6"}  # 基础四档（中考/高考/CET4-6）：默认隐藏
 #: COCA 常见度阈值。排名在这个区间内（数字越小越常见）视为常识词，默认隐藏。
 #: 0 < rank <= 阈值 才算常识词：rank 为 0 表示该词不在 COCA 表里，而表外的多半是
 #: 专名或生僻词，那些是真生词，不能误藏。设 0 关闭这条规则。
@@ -43,6 +43,10 @@ BASIC_LEVELS = {"zk", "gk", "cet4"}  # 基础三档：默认隐藏
 #: 取 2000 而不是更宽：abandon 的排名是 2201、abstract 4045、absorb 3145，
 #: 阈值一旦越过 2201 就把 abandon 挡掉了，而它按定义是真难词。
 COCA_COMMON_RANK = 2000
+#: 单字母 lemma 一律按噪声过滤。来源是 PDF 提取的碎片：集数标号 S01E01 会被
+#: 分词正则拆成 s / e，双栏错排会把单词掰断。真单字母词只有 a / I，它们由
+#: 功能词表兜住；希腊字母 α、λ 等也一并落进这条规则。--all 模式下照常显示。
+MIN_LEMMA_LEN = 2
 
 
 # ---------------------------------------------------------------- 数据加载
@@ -560,9 +564,16 @@ CONTRACTIONS = {**_NEGATIVE_CONTRACTIONS, **_OTHER_CONTRACTIONS}
 
 
 class Token(NamedTuple):
-    """一个词元。fragment=True 表示它是派生片段，本身不是待学词。"""
+    """一个词元。
+
+    fragment=True 表示它是派生片段，本身不是待学词。
+    caps = 表面形态（缩写展开前）首字母大写；sent_start = 来自句子的第一个词。
+    两者只服务于专名判定：句首大写是英语常态不作证据，句中大写才是专名证据。
+    """
     text: str
     fragment: bool = False
+    caps: bool = False
+    sent_start: bool = False
 
 
 def expand_token(surface):
@@ -584,15 +595,18 @@ def sentence_tokens(sent):
     片段照常参与计数，但标记为派生片段，不作为独立生词展示。
     """
     toks = []
-    for surface in TOKEN_RE.findall(sent):
+    for i, surface in enumerate(TOKEN_RE.findall(sent)):
+        caps = surface[:1].isupper()
+        start = i == 0
         for text in expand_token(surface):
             if not text:
                 continue
             if "-" in text:
-                toks.append(Token(text, False))
-                toks.extend(Token(frag, True) for frag in text.split("-") if frag)
+                toks.append(Token(text, False, caps, start))
+                toks.extend(Token(frag, True, caps, start)
+                            for frag in text.split("-") if frag)
             else:
-                toks.append(Token(text, False))
+                toks.append(Token(text, False, caps, start))
     return toks
 
 
@@ -869,7 +883,8 @@ def phrase_levels(phrase, levels, lemma_of):
 # ---------------------------------------------------------------- 统计主流程
 
 class WordStat:
-    __slots__ = ("count", "variants", "examples", "standalone", "fragments", "files")
+    __slots__ = ("count", "variants", "examples", "standalone", "fragments", "files",
+                 "caps_mid", "lower_mid", "caps_start")
 
     def __init__(self):
         self.count = 0
@@ -878,6 +893,10 @@ class WordStat:
         self.standalone = 0
         self.fragments = 0
         self.files = []            # 这个词出现在哪些材料里（按首次出现排序）
+        # 专名判定的证据，只统计独立出现（派生片段不作数）
+        self.caps_mid = 0          # 非句首的大写形态出现次数（Peter 的 "met Peter"）
+        self.lower_mid = 0         # 非句首的小写形态出现次数（出现一次即推翻专名判定）
+        self.caps_start = 0        # 句首大写出现次数（只在句首出现时的专名旁证）
 
     @property
     def is_fragment_only(self):
@@ -993,6 +1012,13 @@ def analyze_materials(materials, show_all, min_count, lexicon,
                     st.fragments += 1
                 else:
                     st.standalone += 1
+                    if not tok.sent_start:    # 句首大写是常态，不作专名主证
+                        if tok.caps:
+                            st.caps_mid += 1
+                        else:
+                            st.lower_mid += 1
+                    elif tok.caps:
+                        st.caps_start += 1
             phrase_input.append((lemmas, orig))
 
     # 例句: 每词最多 MAX_EXAMPLES 条，按长度升序（短的在前）
@@ -1004,16 +1030,24 @@ def analyze_materials(materials, show_all, min_count, lexicon,
     # 过滤
     shown = []
     filtered_known = filtered_basic = filtered_common = filtered_fragments = 0
+    filtered_proper = filtered_single = 0
     for lemma, st in words.items():
         if st.count < min_count:
             continue
         lv = levels.get(lemma, set())
+        proper = is_proper_noun(lemma, st, function_words, valid_words, coca)
         if not show_all:
             if lemma in known:
                 filtered_known += 1
                 continue
+            if len(lemma) < MIN_LEMMA_LEN:   # 单字母碎片是提取噪声，不是待学词
+                filtered_single += 1
+                continue
             if is_basic_word(lv):          # 最高等级判据，不是集合相交
                 filtered_basic += 1
+                continue
+            if proper:                     # 人名/地名：大写都出现在句中
+                filtered_proper += 1
                 continue
             if is_common_word(coca.get(lemma, 0), coca_common_rank):
                 filtered_common += 1
@@ -1033,6 +1067,7 @@ def analyze_materials(materials, show_all, min_count, lexicon,
             "phon": phon, "def": trans, "col": collins,
             "ex": st.examples,
             "known": lemma in known,
+            "pn": proper,
             "files": st.files,
         })
     shown.sort(key=lambda x: -x["c"])
@@ -1043,6 +1078,8 @@ def analyze_materials(materials, show_all, min_count, lexicon,
         "unique": len(words),
         "filtered_known": filtered_known,
         "filtered_basic": filtered_basic,
+        "filtered_proper": filtered_proper,
+        "filtered_single": filtered_single,
         "filtered_common": filtered_common,
         "filtered_fragments": filtered_fragments,
         "shown": len(shown),
@@ -1074,12 +1111,37 @@ def top_level(levels):
 
 
 def is_basic_word(levels):
-    """是不是基础词（基础三档 = 中考/高考/CET4）：只看**最高**等级，不看等级集合相交。
+    """是不是基础词（基础四档 = 中考/高考/CET4-6）：只看**最高**等级，不看等级集合相交。
 
-    用相交判定会误伤 5292 个同时属于基础档与进阶档的词（abandon / abstract /
-    absorb 都是 CET4 + GRE），它们是真难词。实测 5292 这个数字与 spec 一致。
+    用相交判定会误伤大量同时属于基础档与进阶档的词（abandon / abstract /
+    absorb 都是 CET4 + GRE），它们是真难词。
     """
     return top_level(levels) in BASIC_LEVELS
+
+
+def is_proper_noun(lemma, st, function_words=FUNCTION_WORDS, valid_words=frozenset(),
+                   coca=None):
+    """是不是专名（人名/地名/机构名等）。大小写分布是主证据，词典证据定推翻力度：
+
+    - 句中有大写形态（"met Peter"）是专名铁证（句首大写是英语常态，不作主证）。
+    - 有词典证据的真词（词典/等级表/COCA 任一收录）：小写出现过一次即推翻，
+      不能因一次句中大写就丢词 —— peter out 的 peter、强调排版的 internet。
+    - 词典零证据的词反过来：出现过句中大写即判专名，小写推翻失效。台词本、
+      字幕这类材料的人名经常以小写出现（"hey,leonard"），实测某台词本里
+      sheldon 小写 93 次 vs 大写 67 次，小写一票否决会把整个角色表漏进生词表；
+      而零证据词查无释义，对学习者本就不可用，误伤真生词的代价远小于漏放人名。
+    - 只在句首出现过 -> 用 COCA 收录仲裁：常用词几乎都在 COCA 2 万词表内，
+      表外的大写词（Hermione；以及词典里收了冷门义的 harry——动词"掠夺"）
+      按专名处理，表内的（Abandon the plan 的 abandon）按普通词保留。
+    - 功能词（I 等）永远大写，先排除。
+    """
+    if lemma in function_words:
+        return False
+    if st.caps_mid:
+        return not (st.lower_mid and lemma in valid_words)
+    if st.caps_start:
+        return not coca or coca.get(lemma, 0) == 0
+    return False
 
 
 def is_common_word(rank, limit=COCA_COMMON_RANK):
@@ -1142,8 +1204,9 @@ def out_md(meta, words, phrases, out_path):
     L.append(f"- 生成时间: {meta['generated']}")
     L.append(f"- 总词次 {meta['total_tokens']} ｜ 不同原形 {meta['unique']} ｜ "
              f"生词 {meta['shown']}（已过滤已会 {meta['filtered_known']}、"
-             f"基础词 {meta['filtered_basic']}、常识词 {meta['filtered_common']}、"
-             f"派生片段 {meta['filtered_fragments']}）"
+             f"基础词 {meta['filtered_basic']}、专名 {meta['filtered_proper']}、"
+             f"单字母 {meta['filtered_single']}、"
+             f"常识词 {meta['filtered_common']}、派生片段 {meta['filtered_fragments']}）"
              f"｜ 命中词组 {meta['phrase_count']}")
     L.append("")
     L.append("> 完整交互版(可搜索/筛选/展开例句)请打开同名 `.html` 报告")
@@ -1258,7 +1321,7 @@ function initStats() {
   $("#stats").innerHTML =
     `材料: ${esc(m.files.join(", "))} &nbsp;|&nbsp; ${m.generated}<br>` +
     `总词次 <b>${m.total_tokens}</b> ｜ 不同原形 <b>${m.unique}</b> ｜ 生词 <b>${m.shown}</b>` +
-    `（已过滤 已会 ${m.filtered_known} ＋ 基础词 ${m.filtered_basic} ＋ 常识词 ${m.filtered_common} ＋ 派生片段 ${m.filtered_fragments}）｜ 命中词组 <b>${m.phrase_count}</b>` +
+    `（已过滤 已会 ${m.filtered_known} ＋ 基础词 ${m.filtered_basic} ＋ 专名 ${m.filtered_proper||0} ＋ 单字母 ${m.filtered_single||0} ＋ 常识词 ${m.filtered_common} ＋ 派生片段 ${m.filtered_fragments}）｜ 命中词组 <b>${m.phrase_count}</b>` +
     (m.show_all ? " ｜ <b>全量模式（未过滤）</b>" : "");
 }
 
@@ -1315,8 +1378,9 @@ function render() {
       <th style="width:120px">出现材料</th></tr>`;
     for (const w of list) {
       const id = w.w;
-      const chips = w.lv.map(k =>
-        `<span class="lv" style="background:${LV_COLORS[k]}">${LV_NAMES[k]}</span>`).join("")
+      const chips = (w.pn ? `<span class="lv" style="background:#9aa0a6">专名</span>` : "")
+        + w.lv.map(k =>
+          `<span class="lv" style="background:${LV_COLORS[k]}">${LV_NAMES[k]}</span>`).join("")
         || `<span class="lv" style="background:${LV_COLORS.none}">未收录</span>`;
       h += `<tr class="mainrow" data-id="${esc(id)}">
         <td><input type=checkbox data-k="${esc(id)}" ${state.sel.has(id)?"checked":""}></td>
@@ -1394,7 +1458,7 @@ def main():
     ap = argparse.ArgumentParser(description="词频统计（英语学习向）")
     ap.add_argument("input", nargs="?", help="材料文件（.md/.txt） / 目录 / 通配符")
     ap.add_argument("--out", default="wordfreq_output", help="输出目录 (默认 ./wordfreq_output)")
-    ap.add_argument("--all", action="store_true", help="不过滤（显示已会词和基础词）")
+    ap.add_argument("--all", action="store_true", help="不过滤（显示已会词、基础词、专名等全部词）")
     ap.add_argument("--min-count", type=int, default=1, help="最少出现次数 (默认 1)")
     ap.add_argument("--no-anki", action="store_true", help="不生成 Anki 文件")
     ap.add_argument("--no-open", action="store_true", help="不自动打开 HTML 报告")
@@ -1460,7 +1524,9 @@ def main():
     print(f"✔ {len(files)} 个文件, {meta['total_tokens']} 词次, "
           f"生词 {meta['shown']} 个, 词组命中 {meta['phrase_count']} 个 "
           f"({time.time()-t0:.1f}s)")
-    print(f"  过滤: 已会 {meta['filtered_known']} + 基础词(中考/高考/CET4) {meta['filtered_basic']}"
+    print(f"  过滤: 已会 {meta['filtered_known']} + 基础词(中考/高考/CET4-6) {meta['filtered_basic']}"
+          f" + 专名 {meta['filtered_proper']}"
+          f" + 单字母 {meta['filtered_single']}"
           f" + 常识词(COCA≤{args.coca_rank}) {meta['filtered_common']}"
           f" + 派生片段 {meta['filtered_fragments']}"
           + ("  [全量模式]" if args.all else ""))
