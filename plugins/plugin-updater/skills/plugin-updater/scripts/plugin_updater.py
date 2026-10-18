@@ -38,8 +38,9 @@ update 六步链（票 03 仓库写半链 + 票 04 枢纽族实体同步）—�
        （枢纽==旧 pin）直接覆盖不问（内容=批准过的旧基线）；与基线不一致
        默认保留并标出，交互逐个问「覆盖/保留/看 diff」，--adopt 显式声明
        枢纽无手改后按干净落后覆盖；上游新增/枢纽缺失装入（交互批量确认
-       一次，--yes 自动）；上游已移除逐个确认后连枢纽实体与链接层 junction
-       一起删（非交互必须 --delete-removed，否则保留并报告）。覆盖=删旧树
+       一次，--yes 自动）；上游已移除：交互 tty 逐个确认后连枢纽实体与
+       链接层 junction 一起删（--delete-removed 视作预先同意跳过逐个
+       询问；非交互必须显式给出，否则保留并报告）。覆盖=删旧树
        拷新树；目标是 junction 一律拒绝（绝不写穿链接）；删链接用 os.rmdir
        只摘链接（绝不递归删穿目标）
     ⑤ 链接层同步：有结构变化（装入/删除）时调 skill-distributor 的 link
@@ -53,8 +54,8 @@ update 六步链（票 03 仓库写半链 + 票 04 枢纽族实体同步）—�
     check: --root / --hub（同上）
     update: --entry <名> 限定单条目；--yes 非交互确认（缺则拒绝一切变更）；
             --dry-run 只打印将做的变更不写文件；--adopt 声明枢纽无手改；
-            --delete-removed 非交互删除上游已移除实体；--hub 枢纽目录；
-            --link 链接层目录；--root 同上
+            --delete-removed 预先同意删除上游已移除实体（非交互必须显式
+            给出才删）；--hub 枢纽目录；--link 链接层目录；--root 同上
 
 退出码: 0=全部最新且枢纽同步（check）/ 更新成功或无需更新（update）
        1=有更新/无基线/查询失败/枢纽有差异（check）/ 更新失败全链中止或
@@ -125,8 +126,8 @@ STAGE_HEAD = "head"        # 上游 head 查询失败
 STAGE_SYMREF = "symref"    # 默认分支解析失败（仅建基线条目）
 STAGE_TARBALL = "tarball"  # 新版 tarball 下载/解包失败
 STAGE_GATE = "gate"        # 校验门未通过（其余 error 照常阻断）
-# UTF-8 BOM：Windows 工具链可能写入；读写 marketplace.json 时跟随原文件
-BOM = "\\ufeff"  # UTF-8 BOM：Windows 工具链可能写入；读写 marketplace.json 时跟随原文件
+# UTF-8 BOM（U+FEFF）：Windows 工具链可能写入；读写 marketplace.json 时跟随原文件
+BOM = "\ufeff"
 
 STATUS_UPTODATE = "up-to-date"
 STATUS_UPDATE = "update-available"
@@ -858,6 +859,8 @@ def apply_updates(root, plans, dry_run=False, marketplace_path=None,
 
     with open(mp_path, "rb") as f:
         mp_bytes = f.read()
+    # 用 utf-8（非 sig）解码以保留 BOM 字符：先剥掉再解析，
+    # serialize_marketplace_bytes 按原文判断是否补回 BOM
     mp_text = mp_bytes.decode("utf-8")
     data = json.loads(mp_text.lstrip(BOM))
     compat_bytes = open(compat_path, "rb").read()
@@ -905,7 +908,7 @@ SYNC_REMOVE = "sync-remove"        # 仅旧 pin 有而新 pin 没有，枢纽还
 # 保留的原因（报告里标注，处置口径不同）
 KEEP_MISMATCH = "与基线不一致（可能手改，未给 --adopt）"
 KEEP_USER = "用户选择保留"
-KEEP_NO_FLAG = "上游已移除，但非交互缺 --delete-removed"
+KEEP_NO_FLAG = "上游已移除，非交互且未指定 --delete-removed"
 
 # 链接层（Claude Code 专用 junction 层，删已移除成员时一并清）
 DEFAULT_LINK_DIR = os.path.join(os.path.expanduser("~"), ".claude", "skills")
@@ -915,17 +918,22 @@ LINK_SCRIPT_REL = os.path.join("plugins", "skill-distributor", "skills",
                                "skill_distributor.py")
 
 
-def classify_family_sync(tree_old, tree_new, hub_dir):
+def classify_family_sync(tree_old, tree_new, hub_dir, family_new=None,
+                         family_old=None):
     """三方分类（纯决策）：逐族成员给动作（常量见 SYNC_*）。
 
     tree_new 是必有的比对目标（bump 后的新 pin 树 / 建基线时的首棵树）；
     tree_old 为 None（建基线，无旧 pin）时不存在「干净落后/已移除」概念：
     枢纽==新树 -> 不动；枢纽!=新树 -> 保守保留（无基线可证清白）；
-    枢纽缺 -> 装入。内容比对一律走 compare_tree（CRLF 归一，票 02），
-    仅行尾不同不构成漂移。返回 [{name, category, action}]。
+    枢纽缺 -> 装入。族清单可传入预派生结果（family_new/family_old），
+    编排层对同一棵树只派生一次；缺省在函数内现算。
+    内容比对一律走 compare_tree（CRLF 归一，票 02），仅行尾不同不构成漂移。
+    返回 [{name, category, action}]。
     """
-    family_new = derive_family_members(tree_new)
-    family_old = derive_family_members(tree_old) if tree_old else {}
+    if family_new is None:
+        family_new = derive_family_members(tree_new)
+    if family_old is None:
+        family_old = derive_family_members(tree_old) if tree_old else {}
     rows = []
     for name, cat in family_new.items():
         hub_entity = os.path.join(hub_dir, name)
@@ -1056,15 +1064,19 @@ def run_link_sync(root, timeout=300):
 # 三个真实 prompt 都收 input_fn（默认 input），测试注入应答序列即可驱动。
 
 def prompt_mismatch(name, diff_lines, input_fn=None):
-    """不一致实体的逐个确认：覆盖 / 保留 / 看 diff（循环到给出有效答案）。"""
+    """不一致实体的逐个确认：覆盖 / 保留 / 看 diff（循环到给出有效答案）。
+
+    只认显式选项词 o/k/d（及中文）——不收 y/n：y 在装入/删除确认里是
+    「确认」语义，这里 y 若等于覆盖会与该惯例混淆（code-review 拍板）。
+    """
     input_fn = input_fn or input
     while True:
         ans = input_fn(
             f"  [{name}] 与旧 pin 基线不一致（可能手改），覆盖/保留/看 diff？"
             f"[覆盖=o / 保留=k / diff=d] ").strip().lower()
-        if ans in ("o", "overwrite", "覆盖", "y", "yes"):
+        if ans in ("o", "overwrite", "覆盖"):
             return "overwrite"
-        if ans in ("k", "keep", "保留", "n", "no"):
+        if ans in ("k", "keep", "保留"):
             return "keep"
         if ans in ("d", "diff", "看"):
             for ln in diff_lines:
@@ -1105,8 +1117,10 @@ def sync_hub_families(plans, hub_dir, root, *, link_dir=None, yes=False,
     - 与基线不一致：默认保留并标出；--adopt 视同干净落后覆盖；交互下由
       decide_mismatch 逐个决定（覆盖/保留/看 diff）；
     - 上游新增：装入；--yes 自动，交互下 confirm_installs 批量确认一次；
-    - 上游已移除：交互下 decide_removals 逐个确认；非交互必须 --delete-removed
-      才删，否则保留并标注原因；
+    - 上游已移除：交互 tty 逐个确认后即可删（无需旗标），--delete-removed
+      视作预先同意跳过逐个询问；非交互（无 tty 或 --yes）必须显式
+      --delete-removed 才删，否则保留并标注原因；dry-run 预览按同一旗标
+      规则展示将删/将保留（不触发 prompt）；
     - 有实际结构变化（新增/删除）时调 run_link 同步链接层（失败不回滚，
       结果里带回输出供报告给手动补救命令）。
 
@@ -1127,16 +1141,25 @@ def sync_hub_families(plans, hub_dir, root, *, link_dir=None, yes=False,
             confirm_installs = lambda names: True  # noqa: E731
     if decide_removals is None:
         if interactive and not yes:
-            decide_removals = lambda names: prompt_removals(names)  # noqa: E731
+            # 交互 tty：逐个确认即可删；--delete-removed 视作预先同意，跳过询问
+            if delete_removed:
+                decide_removals = lambda names: list(names)  # noqa: E731
+            else:
+                decide_removals = lambda names: prompt_removals(names)  # noqa: E731
         else:
-            decide_removals = lambda names: list(names) if (yes and delete_removed) else []  # noqa: E731
+            # 非交互（无 tty 或 --yes）：必须显式 --delete-removed 才删
+            decide_removals = lambda names: list(names) if delete_removed else []  # noqa: E731
     run_link = run_link or run_link_sync
 
     entries, structure_changed = [], False
     for p in plans:
         tree_old, tree_new = p.get("old_tree"), p["new_tree"]
-        family_old = (derive_family_members(tree_old) if tree_old else {})
-        rows = classify_family_sync(tree_old, tree_new, hub_dir)
+        # 族清单对每棵树只派生一次，传给分类函数复用（同一棵树不派生两遍）
+        family_new = derive_family_members(tree_new)
+        family_old = derive_family_members(tree_old) if tree_old else {}
+        rows = classify_family_sync(tree_old, tree_new, hub_dir,
+                                    family_new=family_new,
+                                    family_old=family_old)
         entry = {"name": p["name"], "overwrite": [], "install": [], "remove": [],
                  "keep": [], "same": [], "errors": []}
         entries.append(entry)
@@ -1147,10 +1170,12 @@ def sync_hub_families(plans, hub_dir, root, *, link_dir=None, yes=False,
             bool(install_rows) and not dry_run
             and confirm_installs([r["name"] for r in install_rows]))
 
-        # 删除：dry-run 按全部计划展示；实删走决策（交互逐个 / --delete-removed）
+        # 删除：dry-run 与执行同一旗标规则（预览不触发 prompt，交互逐个确认
+        # 的粒度预览不出，未给旗标时按「将保留」展示）；实删走决策
+        # （交互逐个 / --delete-removed 预先同意）
         remove_rows = [r for r in rows if r["action"] == SYNC_REMOVE]
         if dry_run:
-            to_remove = [r["name"] for r in remove_rows]
+            to_remove = [r["name"] for r in remove_rows] if delete_removed else []
         else:
             to_remove = decide_removals(
                 [r["name"] for r in remove_rows]) if remove_rows else []
@@ -1362,6 +1387,19 @@ def collect_copy_line(entry_names, market_root,
     return rows
 
 
+def default_copy_line_collector():
+    """副本线收集器工厂（绑真机安装记录的默认路径）：cmd_check / cmd_update
+    共用同一构造，四个路径参数不再在两处重复。"""
+    def collect(entry_names, market_root):
+        return collect_copy_line(
+            entry_names, market_root,
+            zcode_installed_path=ZCODE_INSTALLED_JSON,
+            zcode_known_path=ZCODE_KNOWN_JSON,
+            claude_installed_path=CLAUDE_INSTALLED_JSON,
+            claude_known_path=CLAUDE_KNOWN_JSON)
+    return collect
+
+
 # ---------------------------------------------------------------- 报告
 
 def build_hub_report(hub_results, hub_dir=None, skipped=None):
@@ -1538,12 +1576,7 @@ def cmd_check(root=None, hub_dir=None):
     pin_results = run_check(entries)
     hub_dir = hub_dir or DEFAULT_HUB_DIR
     hub_results = run_hub_check(entries, hub_dir)
-    copy_rows = collect_copy_line(
-        [e["name"] for e in entries], base,
-        zcode_installed_path=ZCODE_INSTALLED_JSON,
-        zcode_known_path=ZCODE_KNOWN_JSON,
-        claude_installed_path=CLAUDE_INSTALLED_JSON,
-        claude_known_path=CLAUDE_KNOWN_JSON)
+    copy_rows = default_copy_line_collector()([e["name"] for e in entries], base)
     skipped = [e["name"] for e in entries if not e.get("pinned_sha")]
     print("\n".join(build_report(pin_results, market_root=base)))
     print("\n".join(build_hub_report(hub_results, hub_dir=hub_dir,
@@ -1620,11 +1653,7 @@ def cmd_update(root=None, entry=None, yes=False, dry_run=False, interactive=None
             if p.get("work"):
                 shutil.rmtree(p["work"], ignore_errors=True)
     if collect_copies is None:
-        collect_copies = lambda names, root_: collect_copy_line(  # noqa: E731
-            names, root_, zcode_installed_path=ZCODE_INSTALLED_JSON,
-            zcode_known_path=ZCODE_KNOWN_JSON,
-            claude_installed_path=CLAUDE_INSTALLED_JSON,
-            claude_known_path=CLAUDE_KNOWN_JSON)
+        collect_copies = default_copy_line_collector()
     copy_rows = collect_copies([e["name"] for e in entries], base)
     print("\n".join(build_update_report(plans, failures, apply_result,
                                         dry_run=dry_run, market_root=base)))
@@ -1658,7 +1687,8 @@ def main(argv=None):
     up.add_argument("--adopt", action="store_true",
                     help="声明枢纽无手改：与基线不一致的实体按干净落后处理直接覆盖")
     up.add_argument("--delete-removed", action="store_true",
-                    help="非交互删除上游已移除的族实体（连链接层）；交互模式逐个确认即可")
+                    help="预先同意删除上游已移除的族实体（连链接层）：交互 tty "
+                         "下跳过逐个询问；非交互必须显式给出才删，否则保留并报告")
     up.add_argument("--hub", help="枢纽 skills 目录（默认 ~/.agents/skills）")
     up.add_argument("--link", help="链接层 skills 目录（默认 ~/.claude/skills，"
                                    "删已移除成员时一并清理）")

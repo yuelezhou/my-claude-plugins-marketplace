@@ -34,7 +34,8 @@ plan_updates 编排（bump/建基线/跳过三分、单条目校验失败不中�
 head 查询失败进失败通道、无 pin 条目才查默认分支、下载用新 head SHA、
 校验门前树根目录名规范成 plugin.json 的 name——codeload 顶层 <repo>-<sha>
 会让 validator 的 name/目录名检查出假阻断）、
-apply_updates（tmp 假仓库双文件产物正确且保持 CRLF/缩进、dry-run 零写入、
+apply_updates（tmp 假仓库双文件产物正确且保持 CRLF/缩进、BOM 跟随原文件
+（带 BOM 夹具 bump 后 BOM 仍在、内容正确）、dry-run 零写入、
 重复 apply 字节级零改动）、cmd_update（非交互无 --yes 拒绝、校验门失败全链中止
 零写入、--entry 单条目、--dry-run、成功后重跑已最新零改动）。
 
@@ -48,6 +49,9 @@ remove_path_safe 删 junction 只摘链接目标完好）、
 sync_hub_families 编排（--yes 策略：干净落后自动覆盖/不一致保留/新增自动装入/
 已移除缺 --delete-removed 保留标注；--adopt 覆盖不一致；交互注入决策序列——
 不一致逐个问拿到 diff、装入批量确认可拒、已移除逐个确认即删；
+已移除删除的两态语义（code-review 修订）：交互 tty 逐个确认即可删
+（--delete-removed 视作预先同意跳过询问）、非交互必须显式旗标缺则保留标注、
+dry-run 预览按同一旗标规则展示将删/将保留；
 链接层仅结构变化时调用、失败不回滚不抛异常；junction 项报错不中断其余；
 同状态重跑零动作；dry-run 只计划零写入）、
 交互 prompt 应答序列（d 看 diff 重问、非法答重问、批量 y/n、逐个删）、
@@ -82,6 +86,7 @@ if hasattr(sys.stdout, "reconfigure"):
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
+import plugin_updater
 from plugin_updater import (
     apply_pin_bump,
     apply_updates,
@@ -1069,6 +1074,33 @@ def test_apply_updates_idempotent_byte_level():
         assert (read_bytes(mp_path), read_bytes(compat_path)) == snapshot, "字节级零改动"
 
 
+def test_apply_updates_bom_follows_original():
+    """契约承诺 BOM 跟随原文件：带 BOM 的 marketplace.json bump 后 BOM 仍在、
+    内容正确、幂等重跑仍字节级零改动（BOM 常量曾是字面文本 \\ufeff，回归锁）。"""
+    with tempfile.TemporaryDirectory() as tmp:
+        root = make_fake_repo(tmp)
+        mp_path, _compat_path = fake_repo_paths(root)
+        with open(mp_path, "rb") as f:
+            original = f.read()
+        assert not original.startswith(b"\xef\xbb\xbf"), "夹具前置：原仓库无 BOM"
+        with open(mp_path, "wb") as f:
+            f.write(b"\xef\xbb\xbf" + original)
+
+        res = apply_updates(root, make_bump_plans())
+        assert res["marketplace"]["written"]
+        data = read_bytes(mp_path)
+        assert data.startswith(b"\xef\xbb\xbf"), "原文件带 BOM -> 写回时补回 BOM"
+        parsed = json.loads(data.decode("utf-8-sig"))
+        alpha = next(p for p in parsed["plugins"] if p["name"] == "alpha-skills")
+        assert alpha["metadata"]["pinnedSha"] == NEW_SHA
+        assert alpha["metadata"]["pinnedAt"] == NEW_DATE, "BOM 之外内容正确 bump"
+        assert b"\r\n" in data, "CRLF 行尾不受 BOM 处理影响"
+
+        res2 = apply_updates(root, make_bump_plans())
+        assert not res2["marketplace"]["changed"] and not res2["marketplace"]["written"]
+        assert read_bytes(mp_path) == data, "对 BOM 文件重复 apply 仍字节级零改动"
+
+
 # ---------------------------------------------------------------- update 命令层（票 03/04）
 
 def hub_test_seams(tmp):
@@ -1711,6 +1743,104 @@ def test_sync_hub_delete_removed_with_flag():
             "junction 目标正本完好（绝不递归删穿）"
 
 
+def test_sync_hub_interactive_default_removal_prompt():
+    """交互 tty 无旗标（默认决策路径）：走 prompt_removals 逐个确认，
+    同意的子集即可删——交互确认即可删，无需 --delete-removed。"""
+    with tempfile.TemporaryDirectory() as tmp:
+        old_tree, new_tree = make_two_pin_trees(tmp)
+        hub = make_hub_from_tree(tmp, old_tree)
+        asked = []
+        orig = plugin_updater.prompt_removals
+
+        def fake_prompt(names, input_fn=None):
+            asked.append(list(names))
+            return list(names)[:1]  # 逐个确认后只同意第一个
+
+        plugin_updater.prompt_removals = fake_prompt
+        try:
+            res = sync_hub_families(make_sync_plans(old_tree, new_tree), hub, tmp,
+                                    yes=False, interactive=True,
+                                    confirm_installs=lambda names: True,
+                                    run_link=lambda root: (True, "ok"))
+        finally:
+            plugin_updater.prompt_removals = orig
+        assert asked == [["wizard"]], "交互下已移除成员被逐个询问"
+        e = res["entries"][0]
+        assert set(e["remove"]) == {"wizard"}, "逐个确认同意后即删（无 flag）"
+        assert not os.path.exists(os.path.join(hub, "wizard"))
+
+
+def test_sync_hub_interactive_delete_removed_pre_consent():
+    """交互 tty 给 --delete-removed：视作预先同意，跳过逐个询问直接删。"""
+    with tempfile.TemporaryDirectory() as tmp:
+        old_tree, new_tree = make_two_pin_trees(tmp)
+        hub = make_hub_from_tree(tmp, old_tree)
+        orig = plugin_updater.prompt_removals
+
+        def must_not_prompt(names, input_fn=None):
+            raise AssertionError("给了 --delete-removed 不应再逐个询问")
+
+        plugin_updater.prompt_removals = must_not_prompt
+        try:
+            res = sync_hub_families(make_sync_plans(old_tree, new_tree), hub, tmp,
+                                    yes=False, interactive=True,
+                                    delete_removed=True,
+                                    confirm_installs=lambda names: True,
+                                    run_link=lambda root: (True, "ok"))
+        finally:
+            plugin_updater.prompt_removals = orig
+        assert set(res["entries"][0]["remove"]) == {"wizard"}
+        assert not os.path.exists(os.path.join(hub, "wizard"))
+
+
+def test_sync_hub_removal_requires_flag_when_noninteractive():
+    """非交互（无 tty / --yes）删除必须显式 --delete-removed：缺旗标保留并
+    标注 KEEP_NO_FLAG；有旗标才删（yes=False 同样成立——旗标本身即显式同意）。"""
+    with tempfile.TemporaryDirectory() as tmp:
+        old_tree, new_tree = make_two_pin_trees(tmp)
+        hub = make_hub_from_tree(tmp, old_tree)
+        res = sync_hub_families(make_sync_plans(old_tree, new_tree), hub, tmp,
+                                yes=False, interactive=False,
+                                run_link=lambda root: (True, "ok"))
+        e = res["entries"][0]
+        assert e["remove"] == []
+        assert {"name": "wizard", "reason": KEEP_NO_FLAG} in e["keep"]
+        assert os.path.isfile(os.path.join(hub, "wizard", "SKILL.md")), "缺旗标保留"
+
+        res2 = sync_hub_families(make_sync_plans(old_tree, new_tree), hub, tmp,
+                                 yes=False, interactive=False,
+                                 delete_removed=True,
+                                 run_link=lambda root: (True, "ok"))
+        assert set(res2["entries"][0]["remove"]) == {"wizard"}, \
+            "非交互 + 显式旗标才删"
+        assert not os.path.exists(os.path.join(hub, "wizard"))
+
+
+def test_sync_hub_dry_run_removal_preview_matches_flag():
+    """dry-run 预览与执行语义对齐：未给 --delete-removed 展示「将保留
+    （非交互且未指定旗标）」，给了展示「将删除（连链接层）」；两者都零写入。"""
+    with tempfile.TemporaryDirectory() as tmp:
+        old_tree, new_tree = make_two_pin_trees(tmp)
+
+        hub_keep = make_hub_from_tree(tmp, old_tree)
+        res = sync_hub_families(make_sync_plans(old_tree, new_tree), hub_keep, tmp,
+                                yes=False, dry_run=True,
+                                run_link=lambda root: (True, "ok"))
+        e = res["entries"][0]
+        assert e["remove"] == [], "未指定旗标时预览不把删除列为将删"
+        assert {"name": "wizard", "reason": KEEP_NO_FLAG} in e["keep"]
+        assert os.path.isdir(os.path.join(hub_keep, "wizard")), "dry-run 零写入"
+
+        shutil.rmtree(hub_keep)
+        hub_del = make_hub_from_tree(tmp, old_tree)
+        res2 = sync_hub_families(make_sync_plans(old_tree, new_tree), hub_del, tmp,
+                                 yes=False, delete_removed=True, dry_run=True,
+                                 run_link=lambda root: (True, "ok"))
+        assert set(res2["entries"][0]["remove"]) == {"wizard"}, \
+            "给了旗标预览展示将删除"
+        assert os.path.isdir(os.path.join(hub_del, "wizard")), "dry-run 不实删"
+
+
 def test_sync_hub_adopt_overrides_mismatch():
     """--adopt：声明枢纽无手改，不一致实体全部按干净落后处理直接覆盖。"""
     with tempfile.TemporaryDirectory() as tmp:
@@ -1901,6 +2031,8 @@ def test_prompt_mismatch_answer_sequences():
     assert prompt_mismatch("x", lines, input_fn=seq_input(["k"])) == "keep"
     assert prompt_mismatch("x", lines, input_fn=seq_input(["bogus", "保留"])) == "keep", \
         "非法答重问，中文答也认"
+    assert prompt_mismatch("x", lines, input_fn=seq_input(["y", "k"])) == "keep", \
+        "y 不是覆盖的别名（y 在装入/删除确认里是「确认」语义，混用会误答）——重问"
 
     assert prompt_batch_install(["a", "b"], input_fn=seq_input(["y"])) is True
     assert prompt_batch_install(["a"], input_fn=seq_input(["n"])) is False
@@ -2114,6 +2246,7 @@ TESTS = [
     test_apply_updates_writes_both_files,
     test_apply_updates_dry_run_zero_write,
     test_apply_updates_idempotent_byte_level,
+    test_apply_updates_bom_follows_original,
     test_cmd_update_end_to_end_idempotent,
     test_cmd_update_guard_noninteractive,
     test_cmd_update_gate_failure_aborts_zero_write,
@@ -2131,6 +2264,10 @@ TESTS = [
     test_remove_path_safe_never_through_junction,
     test_sync_hub_yes_mode_policy,
     test_sync_hub_delete_removed_with_flag,
+    test_sync_hub_interactive_default_removal_prompt,
+    test_sync_hub_interactive_delete_removed_pre_consent,
+    test_sync_hub_removal_requires_flag_when_noninteractive,
+    test_sync_hub_dry_run_removal_preview_matches_flag,
     test_sync_hub_adopt_overrides_mismatch,
     test_sync_hub_interactive_injected_deciders,
     test_sync_hub_link_only_on_structure_change,

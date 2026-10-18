@@ -12,7 +12,7 @@ Category: enhancement
 
 新插件 **plugin-updater**：一个工具、两个子命令。
 
-- `check`——只报告：每条外部聚合条目的 pin SHA vs 上游 head（附上游版本号）、枢纽族实体相对 pin 基线的同步状态（已同步 / 落后 / 与基线不一致）、无 pin 条目（报「无基线」）、其他市场来源的已装插件副本（附刷新命令）。退出码 0 = 全部最新且同步，1 = 有更新或漂移。
+- `check`——只报告：每条外部聚合条目的 pin SHA vs 上游 head（附上游版本号）、枢纽族实体相对 pin 基线的同步状态（已同步 / 与基线不一致（落后或手改，update 时三方分类再区分）/ 缺失）、无 pin 条目（报「无基线」）、其他市场来源的已装插件副本（附刷新命令）。退出码 0 = 全部最新且同步，1 = 有更新或漂移。
 - `update`——六步链：下载新 SHA tarball → `plugin-validator --standalone` 校验门（非 0 error 中止、不写任何文件）→ bump marketplace.json 的 pin 并同步 compat 文档表格 → 枢纽族实体按三方分类同步 → 调 skill-distributor 的 link 同步链接层 → 打印各 agent 插件副本的刷新命令。
 
 升级时用户只操作这一个插件；skill-distributor 被它内部代为调用，不是第二个要手动开的工具。
@@ -57,7 +57,7 @@ Category: enhancement
   - 枢纽 == 旧 pin 内容 → 干净落后，`--yes` 下直接覆盖；
   - 枢纽 ≠ 旧 pin 内容（手改或未知状态）→ 默认保留并标出；交互逐个问「覆盖/保留/看 diff」，`--adopt` 显式声明枢纽无手改后才允许批量覆盖；
   - 仅新 pin 有 → 上游新增，装入（交互批量确认一次）；
-  - 仅旧 pin 有 → 上游已移除，交互逐个确认后连枢纽实体与链接层一起删；非交互必须显式 `--delete-removed`，否则保留并报告。
+  - 仅旧 pin 有 → 上游已移除：交互 tty 逐个确认后即可删（无需旗标），`--delete-removed` 视作预先同意跳过逐个询问；非交互（无 tty 或 `--yes`）必须显式 `--delete-removed` 才删，否则保留并报告；dry-run 预览按同一旗标规则展示将删/将保留（code-review 后修订的两态语义）。
 - **交互矩阵**：非交互环境（检测 tty）无 `--yes` 拒绝一切变更；`--entry <名>` 限定单条目；`--root` 指定 market 仓库根（对齐 skill-distributor 的惯例）。
 - **校验门**：解包的新版本树必须过 plugin-validator 的 standalone 校验且 0 error，否则中止且无任何写入（校验门也是测试接缝的注入点之一）。
 - **外部访问收敛为可注入函数**：远端 head 查询、tarball 获取、validator 调用三个 effect 函数与纯决策层分离——这是唯一的测试接缝。

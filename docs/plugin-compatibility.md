@@ -38,6 +38,7 @@
 | word-frequency | ✅ | ✅ | ✅ 纯 skills | |
 | skill-distributor | ✅ | ✅ | ✅ 纯 skills | 需在 market 仓库 clone 内运行（或 `--root`/`MARKET_REPO`） |
 | plugin-validator | ✅ | ✅ | ✅ 纯 skills | |
+| plugin-updater | ✅ | ✅ | ✅ 纯 skills | 需网络与 git（ls-remote）；校验门调用同仓库 plugin-validator |
 | hello-greeting | ✅ | ✅ | ✅ 纯 skills | |
 | demo-case | ✅ | ✅ | ⚠️ 部分 | debug-helper agent 在 MiniMax 不可用（演示插件，接受降级） |
 | gitee-mcp | ✅ 读 `.mcp.json` | ✅ 读 `.mcp.json` | ✅ 读 `mcp.json` | **两份 MCP 文件方言不同**（`.mcp.json` = `type:http` 给 Claude Code；`mcp.json` = `schemaVersion:1` + `type:streamable-http` 给 MiniMax）。validator 强制校验两者**服务器集合与 url 一致**，transport 差异只告警；`${GITEE_ACCESS_TOKEN}` 在 MiniMax 侧的展开未验证 |

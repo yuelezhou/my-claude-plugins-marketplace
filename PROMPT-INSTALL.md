@@ -25,7 +25,7 @@
 
 | skill | 安装方式 |
 |---|---|
-| mattpocock 工程套件（engineering + productivity + misc 三类约 31 个：grilling、tdd、implement、code-review、pr、retro、git-guardrails-claude-code、migrate-to-shoehorn、scaffold-exercises、setup-pre-commit 等；v1.3.1 起上游移除了 resolving-merge-conflicts。口径注意：插件清单 `.claude-plugin` 只注册 engineering+productivity 共 27 个，misc 4 个（git-guardrails-claude-code、migrate-to-shoehorn、scaffold-exercises、setup-pre-commit，原误标「来源待补」）不在清单里；plugin-updater 按三类目录全口径 31 个派生族成员） | 安装 mattpocock-skills 插件，或跑 `/setup-matt-pocock-skills` |
+| mattpocock skill 族（engineering + productivity + misc 三类约 31 个：grilling、tdd、implement、code-review、pr、retro、git-guardrails-claude-code、migrate-to-shoehorn、scaffold-exercises、setup-pre-commit 等；v1.3.1 起上游移除了 resolving-merge-conflicts。口径注意：插件清单 `.claude-plugin` 只注册 engineering+productivity 共 27 个，misc 4 个（git-guardrails-claude-code、migrate-to-shoehorn、scaffold-exercises、setup-pre-commit，原误标「来源待补」）不在清单里；plugin-updater 按三类目录全口径 31 个派生族成员） | 安装 mattpocock-skills 插件，或跑 `/setup-matt-pocock-skills` |
 | apifox | `npx -y skills add https://github.com/apifox/apifox-cli-skills` |
 | obsidian-skills | 经 marketplace 外部插件（github: kepano/obsidian-skills），不入枢纽 |
 | computer-interface-controller、openclaw-self-evolution-pack | MiniMax 云端 skill-hub 安装，仅 MiniMax 可用 |
