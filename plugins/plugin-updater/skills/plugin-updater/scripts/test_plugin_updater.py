@@ -38,6 +38,26 @@ apply_updates（tmp 假仓库双文件产物正确且保持 CRLF/缩进、dry-ru
 重复 apply 字节级零改动）、cmd_update（非交互无 --yes 拒绝、校验门失败全链中止
 零写入、--entry 单条目、--dry-run、成功后重跑已最新零改动）。
 
+覆盖（票 04 update 下半链：枢纽族实体三方同步）：
+classify_family_sync 五动作（干净落后覆盖 / 已同步不动 / 不一致保留 /
+新增装入 / 已移除删除；建基线无旧树时不覆盖不删；旧成员枢纽缺失补装入；
+CRLF 行尾差异复用 compare_tree 归一不误判）、
+diff_tree_summary（仅枢纽有/仅基线有/内容不同，CRLF 不算差异）、
+实体操作（overwrite_entity 删旧拷新、junction 拒覆盖不写穿；
+remove_path_safe 删 junction 只摘链接目标完好）、
+sync_hub_families 编排（--yes 策略：干净落后自动覆盖/不一致保留/新增自动装入/
+已移除缺 --delete-removed 保留标注；--adopt 覆盖不一致；交互注入决策序列——
+不一致逐个问拿到 diff、装入批量确认可拒、已移除逐个确认即删；
+链接层仅结构变化时调用、失败不回滚不抛异常；junction 项报错不中断其余；
+同状态重跑零动作；dry-run 只计划零写入）、
+交互 prompt 应答序列（d 看 diff 重问、非法答重问、批量 y/n、逐个删）、
+plan_updates 扩展（旧 pin 树先于新树下载、keep_trees 携带 work/old_tree/new_tree、
+缺省用完即清、旧 tarball 拉取失败进失败通道）、
+cmd_update 全链（tmp 假枢纽四类场景端到端、重跑全 skip 零枢纽动作不调链接层、
+枢纽错误项退出码 1 但仓库写入不回滚、dry-run 枢纽只出计划、
+报告三段收尾）、build_hub_sync_report 措辞（四类清单+保留原因、错误项、
+链接层失败给手动补救命令、dry-run 标注）。
+
 用法:
     python test_plugin_updater.py
 
@@ -46,10 +66,13 @@ apply_updates（tmp 假仓库双文件产物正确且保持 CRLF/缩进、dry-ru
     1  有用例失败
 """
 
+import contextlib
+import io
 import json
 import os
 import pathlib
 import shutil
+import subprocess
 import sys
 import tarfile
 import tempfile
@@ -64,26 +87,40 @@ from plugin_updater import (
     apply_updates,
     build_copy_report,
     build_hub_report,
+    build_hub_sync_report,
     build_report,
     build_update_report,
+    classify_family_sync,
     cmd_update,
     collect_copy_line,
     decide_exit_code,
     derive_family_members,
+    diff_tree_summary,
     download_to_file,
+    HubSyncError,
+    is_link_path,
     judge_entry,
     judge_hub_members,
     judge_validator_output,
+    KEEP_MISMATCH,
+    KEEP_NO_FLAG,
+    KEEP_USER,
     normalize_tree_root,
+    overwrite_entity,
     parse_external_entries,
     parse_ls_remote_output,
     parse_symref_output,
     parse_upstream_plugin_json,
     plan_updates,
+    prompt_batch_install,
+    prompt_mismatch,
+    prompt_removals,
     render_pin_cell,
+    remove_path_safe,
     run_check,
     run_hub_check,
     sync_compat_table,
+    sync_hub_families,
 )
 
 
@@ -733,8 +770,9 @@ def test_plan_updates_bump_and_baseline():
         assert by["beta-skills"]["new_sha"] == BASE_SHA
         assert by["beta-skills"]["new_ref"] == "main", "建基线要带默认分支"
         assert by["beta-skills"]["date"] == NEW_DATE
-        assert calls["tar"] == [("alpha/one", NEW_SHA), ("beta/two", BASE_SHA)], \
-            "tarball 按新 head SHA 下载（校验门与实体同步共用一次下载）"
+        assert calls["tar"] == [("alpha/one", OLD_SHA), ("alpha/one", NEW_SHA),
+                                ("beta/two", BASE_SHA)], \
+            "tarball 按新 head SHA 下载，且 bump 条目的旧 pin 树先落地（票 04：三方分类要在 bump 前拿到旧基线）"
         assert calls["symref"] == ["beta/two"], "只有无 pin 条目才查默认分支"
         assert len(calls["validator"]) == 2, "两条目都过同一校验门"
 
@@ -851,6 +889,101 @@ def test_plan_updates_gate_receives_normalized_tree():
             "校验门收到的是改名后的树根（name 与目录名一致，不出假阻断）"
 
 
+# ---------------------------------------------------------------- update 计划扩展（票 04）
+
+def make_plan_seams(tar_by_sha, validator_output=GATE_PASS_OUTPUT):
+    """票 04 计划用假接缝：按 SHA 返回对应 tarball，调用可观测。"""
+    calls = {"tar": [], "validator": []}
+
+    def fetch_head(repo, ref):
+        return {"alpha/one": NEW_SHA, "beta/two": BASE_SHA}[repo]
+
+    def get_tarball(repo, sha, dest_dir, timeout=120):
+        calls["tar"].append((repo, sha))
+        return tar_by_sha[sha]
+
+    def validator(tree):
+        calls["validator"].append(tree)
+        return validator_output
+
+    return calls, {"fetch_head": fetch_head,
+                   "fetch_version": lambda repo, sha: "2.0.0",
+                   "fetch_default_ref": lambda repo: "main",
+                   "get_tarball": get_tarball, "validator": validator}
+
+
+def test_plan_updates_keep_trees_carries_old_and_new():
+    """keep_trees=True：bump 计划携带 work/old_tree/new_tree 供下半链用；
+    建基线条目没有旧树（old_tree=None）；两棵树都真实可派生族成员。"""
+    with tempfile.TemporaryDirectory() as tmp:
+        old_tar, _ = make_pin_tarball(tmp, top_name="tree-old-src",
+                                      tar_name="old.tar.gz")
+        new_tar, _ = make_pin_tarball(tmp, top_name="tree-new-src",
+                                      tar_name="new.tar.gz")
+        calls, seams = make_plan_seams({OLD_SHA: old_tar, NEW_SHA: new_tar,
+                                        BASE_SHA: new_tar})
+        work_root = os.path.join(tmp, "work")
+        plans, failures = plan_updates(make_update_entries(), today=NEW_DATE,
+                                       work_root=work_root, keep_trees=True,
+                                       **seams)
+        assert failures == []
+        assert calls["tar"] == [("alpha/one", OLD_SHA), ("alpha/one", NEW_SHA),
+                                ("beta/two", BASE_SHA)], \
+            "旧 pin 树在 bump 前下载解包（bump 完就找不到旧基线了）"
+        by = {p["name"]: p for p in plans}
+        alpha = by["alpha-skills"]
+        assert os.path.isdir(alpha["work"]) and os.path.isdir(alpha["old_tree"]) \
+            and os.path.isdir(alpha["new_tree"]), "计划携带存活的树路径"
+        assert derive_family_members(alpha["old_tree"]), "旧树可派生族成员"
+        assert os.path.basename(alpha["new_tree"]) != os.path.basename(old_tar), \
+            "新树经 normalize_tree_root（目录名=plugin.json name）"
+        beta = by["beta-skills"]
+        assert beta["old_tree"] is None and os.path.isdir(beta["new_tree"]), \
+            "建基线只有新树"
+        # 清理责任在调用方（cmd_update 收尾）：这里手工清，证明目录真实存在过
+        shutil.rmtree(work_root, ignore_errors=True)
+
+
+def test_plan_updates_default_no_keep_cleans_up():
+    """keep_trees 缺省 False：票 03 语义不变——计划不带树路径、临时目录用完即清。"""
+    with tempfile.TemporaryDirectory() as tmp:
+        old_tar, _ = make_pin_tarball(tmp, top_name="tree-old-src",
+                                      tar_name="old.tar.gz")
+        new_tar, _ = make_pin_tarball(tmp, top_name="tree-new-src",
+                                      tar_name="new.tar.gz")
+        _calls, seams = make_plan_seams({OLD_SHA: old_tar, NEW_SHA: new_tar,
+                                         BASE_SHA: new_tar})
+        work_root = os.path.join(tmp, "work")
+        plans, failures = plan_updates(make_update_entries(), today=NEW_DATE,
+                                       work_root=work_root, **seams)
+        assert failures == []
+        assert all(p.get("old_tree") is None and p.get("new_tree") is None
+                   for p in plans), "纯计划不携带树路径"
+        assert os.listdir(work_root) == [], "临时工作目录用完即清"
+
+
+def test_plan_updates_old_tarball_failure_isolated():
+    """旧 pin tarball 拉取失败 -> stage=tarball 进失败通道，不出计划不写盘。"""
+    with tempfile.TemporaryDirectory() as tmp:
+        new_tar, _ = make_pin_tarball(tmp, top_name="tree-new-src",
+                                      tar_name="new.tar.gz")
+
+        def get_tarball(repo, sha, dest_dir, timeout=120):
+            if sha == OLD_SHA:
+                raise RuntimeError("旧 tarball 拉不动（网络抖动）")
+            return new_tar
+
+        plans, failures = plan_updates(
+            make_update_entries()[:1], today=NEW_DATE,
+            fetch_head=lambda repo, ref: NEW_SHA,
+            fetch_version=lambda repo, sha: "2.0.0",
+            get_tarball=get_tarball,
+            validator=lambda tree: GATE_PASS_OUTPUT)
+        assert plans == []
+        assert len(failures) == 1 and failures[0]["stage"] == "tarball"
+        assert "旧 tarball" in failures[0]["error"], "失败原因可读（定位是旧基线这步）"
+
+
 # ---------------------------------------------------------------- update 写盘（票 03）
 
 def make_bump_plans():
@@ -936,7 +1069,15 @@ def test_apply_updates_idempotent_byte_level():
         assert (read_bytes(mp_path), read_bytes(compat_path)) == snapshot, "字节级零改动"
 
 
-# ---------------------------------------------------------------- update 命令层（票 03）
+# ---------------------------------------------------------------- update 命令层（票 03/04）
+
+def hub_test_seams(tmp):
+    """cmd_update 测试防误伤：枢纽/链接层指 tmp 空目录、链接层假件——
+    票 04 起 update 全链会碰枢纽，测试绝不许碰真机 ~/.agents/skills。"""
+    return {"hub_dir": os.path.join(tmp, "hub"),
+            "link_dir": os.path.join(tmp, "cc-skills"),
+            "run_link": lambda root: (True, "ok")}
+
 
 def test_cmd_update_end_to_end_idempotent():
     """假仓库全链：成功 bump 双文件 -> 重跑已最新零下载零写入（命令级幂等）。"""
@@ -944,7 +1085,8 @@ def test_cmd_update_end_to_end_idempotent():
         root = make_fake_repo(tmp)
         tar_path, _tree = make_pin_tarball(tmp, top_name="skills-new")
         calls, seams = make_update_seams(tar_path)
-        rc = cmd_update(root, yes=True, today=NEW_DATE, **seams)
+        rc = cmd_update(root, yes=True, today=NEW_DATE,
+                        **hub_test_seams(tmp), **seams)
         assert rc == 0, "成功更新退出码 0"
         mp_path, compat_path = fake_repo_paths(root)
         assert NEW_SHA[:7] in read_bytes(compat_path).decode("utf-8")
@@ -952,7 +1094,8 @@ def test_cmd_update_end_to_end_idempotent():
 
         calls["tar"].clear()
         calls["validator"].clear()
-        rc2 = cmd_update(root, yes=True, today=NEW_DATE, **seams)
+        rc2 = cmd_update(root, yes=True, today=NEW_DATE,
+                         **hub_test_seams(tmp), **seams)
         assert rc2 == 0, "重跑（已最新）也退出码 0"
         assert calls["tar"] == [] and calls["validator"] == [], \
             "已最新条目不下载、不校验"
@@ -1008,7 +1151,8 @@ def test_cmd_update_dry_run_zero_write():
         calls, seams = make_update_seams(tar_path)
         mp_path, compat_path = fake_repo_paths(root)
         before = (read_bytes(mp_path), read_bytes(compat_path))
-        rc = cmd_update(root, dry_run=True, interactive=False, today=NEW_DATE, **seams)
+        rc = cmd_update(root, dry_run=True, interactive=False, today=NEW_DATE,
+                        **hub_test_seams(tmp), **seams)
         assert rc == 0
         assert len(calls["validator"]) == 2, "dry-run 仍走完整校验门（报告才可信）"
         assert (read_bytes(mp_path), read_bytes(compat_path)) == before, "零写入"
@@ -1020,7 +1164,8 @@ def test_cmd_update_entry_filter():
         root = make_fake_repo(tmp)
         tar_path, _tree = make_pin_tarball(tmp, top_name="skills-new")
         _calls, seams = make_update_seams(tar_path)
-        rc = cmd_update(root, entry="alpha-skills", yes=True, today=NEW_DATE, **seams)
+        rc = cmd_update(root, entry="alpha-skills", yes=True, today=NEW_DATE,
+                        **hub_test_seams(tmp), **seams)
         assert rc == 0
         mp_path, compat_path = fake_repo_paths(root)
         data = json.loads(read_bytes(mp_path).decode("utf-8"))
@@ -1070,6 +1215,697 @@ def test_build_update_report():
     assert "dry-run" in text4 and "未写入" in text4
 
 
+# ---------------------------------------------------------------- update 全链（票 04）
+
+def make_tar_of_tree(tmp, tree_root, tar_name):
+    """把现成目录树打成 codeload 形态 tar.gz（单顶层目录=树根名）。"""
+    tar_path = os.path.join(tmp, tar_name)
+    with tarfile.open(tar_path, "w:gz") as tf:
+        tf.add(tree_root, arcname=os.path.basename(tree_root))
+    return tar_path
+
+
+def missing_copy_rows(names, root):
+    """副本线假件：安装记录全缺 -> 全部未安装（避免测试读真机 home）。"""
+    nope = os.path.join(root, "no-such-installed.json")
+    return collect_copy_line(names, root, zcode_installed_path=nope,
+                             zcode_known_path=nope,
+                             claude_installed_path=nope,
+                             claude_known_path=nope)
+
+
+def test_cmd_update_full_chain_hub_sync():
+    """update 全链端到端：仓库 bump + 枢纽四方分类落地 + 链接层被调 + 三段报告收尾。"""
+    with tempfile.TemporaryDirectory() as tmp:
+        root = make_fake_repo(tmp)
+        old_tree, new_tree = make_two_pin_trees(tmp)
+        old_tar = make_tar_of_tree(tmp, old_tree, "old.tar.gz")
+        new_tar = make_tar_of_tree(tmp, new_tree, "new.tar.gz")
+        hub = make_hub_from_tree(tmp, old_tree)
+        with open(os.path.join(hub, "grilling", "SKILL.md"), "a",
+                  encoding="utf-8") as f:
+            f.write("手改\n")
+        link_dir = os.path.join(tmp, "cc-skills")
+        os.makedirs(link_dir)
+        link_calls = []
+        tars = {OLD_SHA: old_tar, NEW_SHA: new_tar}
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            rc = cmd_update(
+                root, entry="alpha-skills", yes=True, today=NEW_DATE,
+                hub_dir=hub, link_dir=link_dir,
+                fetch_head=lambda repo, ref: NEW_SHA,
+                fetch_version=lambda repo, sha: "2.0.0",
+                get_tarball=lambda repo, sha, dest_dir, timeout=120: tars[sha],
+                validator=lambda tree: GATE_PASS_OUTPUT,
+                run_link=lambda r: link_calls.append(r) or (True, "link-ok"),
+                collect_copies=missing_copy_rows)
+        assert rc == 0
+        out = buf.getvalue()
+        # 仓库写半链（票 03 回归）：pin bump 落盘
+        data = json.loads(read_bytes(
+            os.path.join(root, ".claude-plugin", "marketplace.json")).decode("utf-8"))
+        alpha = next(p for p in data["plugins"] if p["name"] == "alpha-skills")
+        assert alpha["metadata"]["pinnedSha"] == NEW_SHA
+        # 枢纽四方分类落地
+        with open(os.path.join(hub, "tdd", "SKILL.md"), "r", encoding="utf-8") as f:
+            assert "v2" in f.read(), "干净落后已覆盖"
+        assert os.path.isdir(os.path.join(hub, "teach")), "上游新增已装入"
+        assert os.path.isfile(os.path.join(hub, "wizard", "SKILL.md")), \
+            "已移除缺 --delete-removed 保留"
+        with open(os.path.join(hub, "grilling", "SKILL.md"), "r",
+                  encoding="utf-8") as f:
+            assert "手改" in f.read(), "不一致默认保留"
+        # 链接层：装入是结构变化 -> 被调且拿仓库根
+        assert link_calls == [root]
+        assert not os.path.exists(os.path.join(link_dir, "wizard")), \
+            "未删（无 flag）时链接层也不动"
+        # 报告三段：计划段 + 枢纽同步段 + 副本段
+        assert "枢纽族实体同步" in out
+        sync_section = out.split("枢纽族实体同步")[1].split("其他市场插件副本")[0]
+        assert "覆盖" in sync_section and "装入" in sync_section \
+            and "保留" in sync_section
+        assert "删除 " not in sync_section, "无删除动作时不出删除清单"
+        assert "其他市场插件副本" in out and "未安装" in out, "副本刷新命令段收尾"
+
+
+def test_cmd_update_rerun_skip_zero_hub_actions():
+    """全链幂等：更新后重跑（pin==head）-> 全部 skip、不碰枢纽、不调链接层。"""
+    with tempfile.TemporaryDirectory() as tmp:
+        root = make_fake_repo(tmp)
+        old_tree, new_tree = make_two_pin_trees(tmp)
+        old_tar = make_tar_of_tree(tmp, old_tree, "old.tar.gz")
+        new_tar = make_tar_of_tree(tmp, new_tree, "new.tar.gz")
+        hub = make_hub_from_tree(tmp, old_tree)
+        link_calls = []
+        tars = {OLD_SHA: old_tar, NEW_SHA: new_tar}
+        seams = dict(fetch_head=lambda repo, ref: NEW_SHA,
+                     fetch_version=lambda repo, sha: "2.0.0",
+                     get_tarball=lambda repo, sha, dest_dir, timeout=120: tars[sha],
+                     validator=lambda tree: GATE_PASS_OUTPUT,
+                     run_link=lambda r: link_calls.append(r) or (True, "ok"),
+                     collect_copies=missing_copy_rows)
+        with contextlib.redirect_stdout(io.StringIO()):
+            assert cmd_update(root, entry="alpha-skills", yes=True,
+                              today=NEW_DATE, hub_dir=hub,
+                              link_dir=os.path.join(tmp, "cc"), **seams) == 0
+        snapshot = sorted(os.listdir(hub))
+        tar_calls = []
+        seams2 = dict(seams)
+        seams2["get_tarball"] = (
+            lambda repo, sha, dest_dir, timeout=120:
+            tar_calls.append(sha) or tars[sha])
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            rc2 = cmd_update(root, entry="alpha-skills", yes=True,
+                             today=NEW_DATE, hub_dir=hub,
+                             link_dir=os.path.join(tmp, "cc"), **seams2)
+        assert rc2 == 0
+        assert tar_calls == [], "重跑不下载（skip 在下载之前）"
+        assert sorted(os.listdir(hub)) == snapshot, "重跑零枢纽动作"
+        assert len(link_calls) == 1, "重跑不再调链接层"
+        assert "已最新" in buf.getvalue()
+
+
+def test_cmd_update_sync_error_exit_code_one():
+    """枢纽同步单项错误（junction 拒覆盖）-> 退出码 1，但已写入的仓库文件不回滚。"""
+    with tempfile.TemporaryDirectory() as tmp:
+        root = make_fake_repo(tmp)
+        old_tree, new_tree = make_two_pin_trees(tmp)
+        old_tar = make_tar_of_tree(tmp, old_tree, "old.tar.gz")
+        new_tar = make_tar_of_tree(tmp, new_tree, "new.tar.gz")
+        hub = make_hub_from_tree(tmp, old_tree)
+        target = os.path.join(tmp, "tdd-repo")
+        shutil.copytree(os.path.join(old_tree, "skills", "engineering", "tdd"),
+                        target)
+        shutil.rmtree(os.path.join(hub, "tdd"))
+        make_junction(os.path.join(hub, "tdd"), target)
+        tars = {OLD_SHA: old_tar, NEW_SHA: new_tar}
+        rc = cmd_update(
+            root, entry="alpha-skills", yes=True, today=NEW_DATE,
+            hub_dir=hub, link_dir=os.path.join(tmp, "cc"),
+            fetch_head=lambda repo, ref: NEW_SHA,
+            fetch_version=lambda repo, sha: "2.0.0",
+            get_tarball=lambda repo, sha, dest_dir, timeout=120: tars[sha],
+            validator=lambda tree: GATE_PASS_OUTPUT,
+            run_link=lambda r: (True, "ok"),
+            collect_copies=missing_copy_rows)
+        assert rc == 1, "枢纽有错误项 -> 退出码 1"
+        data = json.loads(read_bytes(
+            os.path.join(root, ".claude-plugin", "marketplace.json")).decode("utf-8"))
+        alpha = next(p for p in data["plugins"] if p["name"] == "alpha-skills")
+        assert alpha["metadata"]["pinnedSha"] == NEW_SHA, \
+            "pin bump 已写入不回滚（错误只在枢纽单项）"
+        assert os.path.isdir(os.path.join(hub, "teach")), "其余成员照常落地"
+
+
+def test_cmd_update_dry_run_hub_planned_not_executed():
+    """dry-run 全链：枢纽同步段只出计划（零写入、不调链接层），仓库文件零改动。"""
+    with tempfile.TemporaryDirectory() as tmp:
+        root = make_fake_repo(tmp)
+        old_tree, new_tree = make_two_pin_trees(tmp)
+        old_tar = make_tar_of_tree(tmp, old_tree, "old.tar.gz")
+        new_tar = make_tar_of_tree(tmp, new_tree, "new.tar.gz")
+        hub = make_hub_from_tree(tmp, old_tree)
+        snapshot = sorted(os.listdir(hub))
+        link_calls = []
+        tars = {OLD_SHA: old_tar, NEW_SHA: new_tar}
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            rc = cmd_update(
+                root, entry="alpha-skills", dry_run=True, interactive=False,
+                today=NEW_DATE, hub_dir=hub, link_dir=os.path.join(tmp, "cc"),
+                fetch_head=lambda repo, ref: NEW_SHA,
+                fetch_version=lambda repo, sha: "2.0.0",
+                get_tarball=lambda repo, sha, dest_dir, timeout=120: tars[sha],
+                validator=lambda tree: GATE_PASS_OUTPUT,
+                run_link=lambda r: link_calls.append(r) or (True, "ok"),
+                collect_copies=missing_copy_rows)
+        assert rc == 0
+        assert sorted(os.listdir(hub)) == snapshot, "dry-run 枢纽零写入"
+        assert link_calls == [], "dry-run 不调链接层"
+        out = buf.getvalue()
+        assert "dry-run" in out and "未执行" in out, "枢纽段标注 dry-run"
+        assert "将做的动作" in out
+
+
+def test_build_hub_sync_report():
+    """枢纽同步段报告措辞：四类清单+保留原因、错误项、链接层状态与补救命令、dry-run。"""
+    sync_res = {
+        "entries": [
+            {"name": "alpha-skills", "overwrite": ["tdd"],
+             "install": ["pr", "teach"], "remove": ["wizard"],
+             "keep": [{"name": "grilling", "reason": KEEP_MISMATCH}],
+             "same": ["code-review"],
+             "errors": [{"name": "tdd", "error": "拒绝覆盖：junction"}]},
+            {"name": "beta-skills", "overwrite": [], "install": [], "remove": [],
+             "keep": [], "same": ["a", "b"], "errors": []},
+        ],
+        "structure_changed": True,
+        "link": {"ran": True, "ok": False, "output": "boom: link 失败"}}
+    text = "\n".join(build_hub_sync_report(sync_res))
+    assert "alpha-skills" in text and "beta-skills" in text
+    assert "覆盖" in text and "tdd" in text
+    assert "装入" in text and "teach" in text
+    assert "删除" in text and "wizard" in text and "链接层" in text
+    assert "grilling" in text and KEEP_MISMATCH in text, "保留带原因"
+    assert "已同步 1 个" in text, "已同步成员给计数即可（不逐个列名）"
+    assert "拒绝覆盖" in text, "错误项进报告"
+    assert "skill_distributor.py link" in text, "链接层失败给手动补救命令"
+    assert "boom" in text
+
+    text_ok = "\n".join(build_hub_sync_report({**sync_res, "link": {
+        "ran": True, "ok": True, "output": "ok"}}))
+    assert "已同步" in text_ok
+
+    text_dry = "\n".join(build_hub_sync_report(sync_res, dry_run=True))
+    assert "dry-run" in text_dry and "未执行" in text_dry
+
+    text_noop = "\n".join(build_hub_sync_report({
+        "entries": [{"name": "g", "overwrite": [], "install": [], "remove": [],
+                     "keep": [], "same": ["x"], "errors": []}],
+        "structure_changed": False,
+        "link": {"ran": False, "ok": None, "output": ""}}))
+    assert "结构无变化" in text_noop or "未调用" in text_noop
+
+# ---------------------------------------------------------------- update 下半链：三方分类（票 04）
+
+SYNC_CATS = {"tdd": "engineering", "code-review": "engineering",
+             "grilling": "productivity", "wizard": "misc",
+             "teach": "productivity", "pr": "engineering"}
+
+
+def make_two_pin_trees(tmp):
+    """票 04 分类夹具：旧/新两棵 pin 树。
+    tdd 上游改了内容（干净落后样本）；code-review / grilling 原样；
+    teach / pr 仅新树有（上游新增）；wizard 仅旧树有（上游已移除）。
+    返回 (old_tree, new_tree)。"""
+    old_tree = os.path.join(tmp, "tree-old")
+    new_tree = os.path.join(tmp, "tree-new")
+    for name in ("tdd", "code-review", "grilling", "wizard"):
+        write_text(os.path.join(old_tree, "skills", SYNC_CATS[name], name, "SKILL.md"),
+                   f"---\nname: {name}\n---\nbody of {name}\n")
+    for name in ("tdd", "code-review", "grilling", "teach", "pr"):
+        body = f"body of {name} v2\n" if name == "tdd" else f"body of {name}\n"
+        write_text(os.path.join(new_tree, "skills", SYNC_CATS[name], name, "SKILL.md"),
+                   f"---\nname: {name}\n---\n{body}")
+    return old_tree, new_tree
+
+
+def crlf_tree(root):
+    """把树里全部文本文件重写为 CRLF 行尾（内容行不变）。"""
+    for dirpath, _dirnames, filenames in os.walk(root):
+        for fn in filenames:
+            p = os.path.join(dirpath, fn)
+            with open(p, "rb") as f:
+                data = f.read().replace(b"\r\n", b"\n")
+            with open(p, "wb") as f:
+                f.write(data.replace(b"\n", b"\r\n"))
+
+
+def test_classify_family_sync_five_actions():
+    """三方分类五动作：干净落后覆盖 / 已同步不动 / 不一致保留 / 新增装入 / 已移除删除。"""
+    with tempfile.TemporaryDirectory() as tmp:
+        old_tree, new_tree = make_two_pin_trees(tmp)
+        hub = make_hub_from_tree(tmp, old_tree)  # 枢纽 = 旧树原样拷贝
+        with open(os.path.join(hub, "grilling", "SKILL.md"), "a",
+                  encoding="utf-8") as f:
+            f.write("手改一行\n")  # grilling：枢纽 != 旧基线 -> 不一致
+        rows = classify_family_sync(old_tree, new_tree, hub)
+        by = {r["name"]: r["action"] for r in rows}
+        assert by == {
+            "tdd": "sync-overwrite",     # 枢纽==旧 pin 且 != 新 pin -> 干净落后
+            "code-review": "sync-same",  # 枢纽==旧==新 -> 已同步，不动
+            "grilling": "sync-keep",     # 枢纽!=旧 pin -> 与基线不一致，默认保留
+            "teach": "sync-install",     # 仅新 pin 有，枢纽缺 -> 装入
+            "pr": "sync-install",
+            "wizard": "sync-remove",     # 仅旧 pin 有，枢纽还在 -> 删
+        }, "三方分类（枢纽实体 × 旧 pin × 新 pin）必须精确落到五个动作"
+        cats = {r["name"]: r["category"] for r in rows}
+        assert cats["teach"] == "productivity" and cats["wizard"] == "misc", \
+            "分类行带分类归属（删除/装入要知道来自哪棵树的哪个分类）"
+
+
+def test_classify_family_sync_baseline_no_old_tree():
+    """建基线（旧树=None）：没有「干净落后/已移除」概念；已同步/保留/装入三分。"""
+    with tempfile.TemporaryDirectory() as tmp:
+        _old, new_tree = make_two_pin_trees(tmp)
+        hub = make_hub_from_tree(tmp, new_tree)  # 枢纽已等于新树
+        with open(os.path.join(hub, "tdd", "SKILL.md"), "a",
+                  encoding="utf-8") as f:
+            f.write("手改\n")
+        rows = classify_family_sync(None, new_tree, hub)
+        by = {r["name"]: r["action"] for r in rows}
+        assert by["code-review"] == "sync-same", "枢纽==新树 -> 已同步"
+        assert by["tdd"] == "sync-keep", "无旧基线可比，枢纽!=新树只能保守保留"
+        assert "wizard" not in by, "建基线不删任何实体（没有「上游已移除」基线依据）"
+        assert by["teach"] == "sync-same" and by["pr"] == "sync-same", \
+            "枢纽已有且与新树一致的成员不动"
+
+        shutil.rmtree(os.path.join(hub, "grilling"))
+        rows2 = classify_family_sync(None, new_tree, hub)
+        by2 = {r["name"]: r["action"] for r in rows2}
+        assert by2["grilling"] == "sync-install", "旧成员枢纽缺失同样补装入"
+
+
+def test_classify_family_sync_missing_member_in_hub_installs():
+    """旧 pin 就有、但枢纽一直缺的成员 -> 装入（check 报「缺失」的闭环）。"""
+    with tempfile.TemporaryDirectory() as tmp:
+        old_tree, new_tree = make_two_pin_trees(tmp)
+        hub = make_hub_from_tree(tmp, old_tree, omit=("code-review",))
+        rows = classify_family_sync(old_tree, new_tree, hub)
+        by = {r["name"]: r["action"] for r in rows}
+        assert by["code-review"] == "sync-install", \
+            "枢纽缺的族成员装入新树版本（无论上游是否新增）"
+
+
+def test_classify_family_sync_crlf_not_drift():
+    """CRLF 不误判（复用票 02 的 compare_tree 归一，覆盖 update 分类路径）：
+    枢纽实体 CRLF、pin 树 LF 时，干净落后仍判覆盖、已同步不误判为漂移。"""
+    with tempfile.TemporaryDirectory() as tmp:
+        old_tree, new_tree = make_two_pin_trees(tmp)
+        hub = make_hub_from_tree(tmp, old_tree)
+        crlf_tree(os.path.join(hub, "tdd"))
+        crlf_tree(os.path.join(hub, "code-review"))
+        rows = classify_family_sync(old_tree, new_tree, hub)
+        by = {r["name"]: r["action"] for r in rows}
+        assert by["tdd"] == "sync-overwrite", \
+            "仅行尾不同的干净落后必须判覆盖，不得升格为「与基线不一致」"
+        assert by["code-review"] == "sync-same", "仅行尾不同不得误判为漂移/覆盖"
+
+
+# ---------------------------------------------------------------- 差异摘要（票 04）
+
+def test_diff_tree_summary():
+    """「看 diff」的数据源：仅枢纽有 / 仅基线有 / 内容不同（行尾归一后）三清单。"""
+    with tempfile.TemporaryDirectory() as tmp:
+        a = os.path.join(tmp, "a")
+        b = os.path.join(tmp, "b")
+        write_text(os.path.join(a, "same.md"), "x\n")
+        write_text(os.path.join(a, "changed.md"), "old\n")
+        write_text(os.path.join(a, "sub", "only-hub.md"), "h\n")
+        write_text(os.path.join(b, "same.md"), "x\n")
+        write_text(os.path.join(b, "changed.md"), "new\n")
+        write_text(os.path.join(b, "only-base.md"), "b\n")
+        d = diff_tree_summary(a, b)
+        assert d["only_hub"] == [os.path.join("sub", "only-hub.md")]
+        assert d["only_base"] == ["only-base.md"]
+        assert d["changed"] == ["changed.md"]
+
+        write_text(os.path.join(a, "crlf.md"), "x\r\ny\r\n")
+        write_text(os.path.join(b, "crlf.md"), "x\ny\n")
+        d2 = diff_tree_summary(a, b)
+        assert "crlf.md" not in d2["changed"], "仅行尾不同不算内容差异"
+
+        d3 = diff_tree_summary(os.path.join(tmp, "no-such"), b)
+        assert d3["only_base"] and not d3["only_hub"] and not d3["changed"], \
+            "枢纽侧目录整个不存在 = 全部仅基线有（缺失成员的 diff 形态）"
+
+
+# ---------------------------------------------------------------- 实体操作（票 04）
+
+def make_junction(link, target):
+    """Windows junction 夹具：mklink /J 只能在 cmd 里建；建好断言确实可识别。
+
+    cmd 输出是本地代码页（GBK），text 解码用 errors=replace 防崩（内容不参与断言）。
+    """
+    proc = subprocess.run(["cmd", "/c", "mklink", "/J", link, target],
+                          capture_output=True, text=True, errors="replace")
+    assert proc.returncode == 0, f"mklink /J 失败: {(proc.stderr or proc.stdout).strip()}"
+    assert is_link_path(link), "测试前置：is_link_path 必须能识别 junction"
+    return link
+
+
+def test_overwrite_entity_replaces_tree():
+    """覆盖 = 删旧实体树后拷入新树：旧多出的文件消失、新子目录结构完整进来。"""
+    with tempfile.TemporaryDirectory() as tmp:
+        hub_entity = os.path.join(tmp, "hub-entity")
+        src = os.path.join(tmp, "src")
+        write_text(os.path.join(hub_entity, "old-only.md"), "旧独有\n")
+        write_text(os.path.join(hub_entity, "SKILL.md"), "旧版\n")
+        write_text(os.path.join(src, "SKILL.md"), "新版\n")
+        write_text(os.path.join(src, "references", "a.md"), "新子目录\n")
+        overwrite_entity(hub_entity, src)
+        assert not os.path.exists(os.path.join(hub_entity, "old-only.md")), \
+            "旧树多出的文件不得残留"
+        with open(os.path.join(hub_entity, "SKILL.md"), "rb") as f:
+            assert f.read() == "新版\n".encode("utf-8")
+        assert os.path.isfile(os.path.join(hub_entity, "references", "a.md"))
+
+
+def test_overwrite_entity_refuses_junction():
+    """枢纽实体是 junction -> 拒绝覆盖并报错（绝不写穿链接改到链接目标）。"""
+    with tempfile.TemporaryDirectory() as tmp:
+        target = os.path.join(tmp, "real")
+        write_text(os.path.join(target, "SKILL.md"), "正本\n")
+        link = make_junction(os.path.join(tmp, "linked"), target)
+        try:
+            overwrite_entity(link, os.path.join(tmp, "src"))
+            raise AssertionError("junction 实体必须拒绝覆盖")
+        except HubSyncError:
+            pass
+        with open(os.path.join(target, "SKILL.md"), "r", encoding="utf-8") as f:
+            assert f.read() == "正本\n", "链接目标内容不得被写穿"
+        assert is_link_path(link), "junction 本身保留原样（错误由报告表达）"
+
+
+def test_remove_path_safe_never_through_junction():
+    """删除安全：实体树整删；junction 只删链接本身（os.rmdir），目标正本完好。"""
+    with tempfile.TemporaryDirectory() as tmp:
+        target = os.path.join(tmp, "real")
+        write_text(os.path.join(target, "SKILL.md"), "正本\n")
+        link = make_junction(os.path.join(tmp, "link"), target)
+        remove_path_safe(link)
+        assert not os.path.exists(link), "junction 已删"
+        assert os.path.isfile(os.path.join(target, "SKILL.md")), \
+            "junction 的目标正本必须完好无损（绝不递归删穿链接）"
+
+        entity = os.path.join(tmp, "entity")
+        write_text(os.path.join(entity, "sub", "f.md"), "x\n")
+        remove_path_safe(entity)
+        assert not os.path.exists(entity), "实体目录树整删"
+
+        lonely = os.path.join(tmp, "lonely.txt")
+        write_text(lonely, "x")
+        remove_path_safe(lonely)
+        assert not os.path.exists(lonely), "散文件也按删除处理"
+
+        remove_path_safe(os.path.join(tmp, "no-such")), "不存在的路径静默跳过"
+
+
+# ---------------------------------------------------------------- 枢纽同步编排（票 04）
+
+def make_sync_plans(old_tree, new_tree, name="alpha-skills"):
+    """手搓带树路径的 bump 计划（sync_hub_families 的输入形态）。"""
+    return [{"action": "bump", "name": name, "repo": "alpha/one", "ref": "main",
+             "old_sha": OLD_SHA, "new_sha": NEW_SHA, "new_ref": None,
+             "date": NEW_DATE, "version": "2.0.0", "waived": [],
+             "old_tree": old_tree, "new_tree": new_tree}]
+
+
+def seq_input(answers):
+    """应答序列 -> input 假件（逐个弹出，供交互函数测试）。"""
+    it = iter(answers)
+    return lambda _prompt: next(it)
+
+
+def test_sync_hub_yes_mode_policy():
+    """--yes 批量语义：干净落后自动覆盖、不一致默认保留、新增自动装入、
+    已移除缺 --delete-removed 时保留并标注原因；结构变化触发链接层同步。"""
+    with tempfile.TemporaryDirectory() as tmp:
+        old_tree, new_tree = make_two_pin_trees(tmp)
+        hub = make_hub_from_tree(tmp, old_tree)
+        with open(os.path.join(hub, "grilling", "SKILL.md"), "a",
+                  encoding="utf-8") as f:
+            f.write("手改\n")
+        link_calls = []
+
+        def fake_link(root):
+            link_calls.append(root)
+            return True, "link ok"
+
+        res = sync_hub_families(make_sync_plans(old_tree, new_tree), hub, tmp,
+                                yes=True, run_link=fake_link)
+        e = res["entries"][0]
+        assert set(e["overwrite"]) == {"tdd"}, "干净落后自动覆盖"
+        assert set(e["same"]) == {"code-review"}
+        assert e["keep"] == [{"name": "grilling", "reason": KEEP_MISMATCH},
+                             {"name": "wizard", "reason": KEEP_NO_FLAG}], \
+            "不一致默认保留并标注原因；已移除缺 --delete-removed 保留并标注"
+        assert set(e["install"]) == {"teach", "pr"}, "新增自动装入"
+        assert e["remove"] == []
+        assert e["errors"] == []
+        # 产物核验
+        with open(os.path.join(hub, "tdd", "SKILL.md"), "r", encoding="utf-8") as f:
+            assert "v2" in f.read(), "tdd 覆盖为新版内容"
+        assert os.path.isdir(os.path.join(hub, "teach"))
+        assert os.path.isdir(os.path.join(hub, "pr"))
+        assert os.path.isfile(os.path.join(hub, "wizard", "SKILL.md")), "wizard 保留"
+        with open(os.path.join(hub, "grilling", "SKILL.md"), "r", encoding="utf-8") as f:
+            assert "手改" in f.read(), "grilling 手改保留"
+        assert res["structure_changed"] is True
+        assert res["link"] == {"ran": True, "ok": True, "output": "link ok"}
+        assert link_calls == [tmp], "链接层同步拿仓库根调用"
+
+
+def test_sync_hub_delete_removed_with_flag():
+    """--delete-removed：已移除成员连枢纽实体与链接层 junction 一起删，目标正本完好。"""
+    with tempfile.TemporaryDirectory() as tmp:
+        old_tree, new_tree = make_two_pin_trees(tmp)
+        hub = make_hub_from_tree(tmp, old_tree)
+        link_dir = os.path.join(tmp, "cc-skills")
+        os.makedirs(link_dir)
+        target = os.path.join(tmp, "wizard-backup")
+        shutil.copytree(os.path.join(hub, "wizard"), target)
+        make_junction(os.path.join(link_dir, "wizard"), target)
+
+        res = sync_hub_families(make_sync_plans(old_tree, new_tree), hub, tmp,
+                                yes=True, delete_removed=True, link_dir=link_dir,
+                                run_link=lambda root: (True, "ok"))
+        e = res["entries"][0]
+        assert set(e["remove"]) == {"wizard"}
+        assert not os.path.exists(os.path.join(hub, "wizard")), "枢纽实体已删"
+        assert not os.path.lexists(os.path.join(link_dir, "wizard")), \
+            "链接层同名 junction 一并删"
+        assert os.path.isfile(os.path.join(target, "SKILL.md")), \
+            "junction 目标正本完好（绝不递归删穿）"
+
+
+def test_sync_hub_adopt_overrides_mismatch():
+    """--adopt：声明枢纽无手改，不一致实体全部按干净落后处理直接覆盖。"""
+    with tempfile.TemporaryDirectory() as tmp:
+        old_tree, new_tree = make_two_pin_trees(tmp)
+        hub = make_hub_from_tree(tmp, old_tree)
+        with open(os.path.join(hub, "grilling", "SKILL.md"), "a",
+                  encoding="utf-8") as f:
+            f.write("手改\n")
+        res = sync_hub_families(make_sync_plans(old_tree, new_tree), hub, tmp,
+                                yes=True, adopt=True,
+                                run_link=lambda root: (True, "ok"))
+        e = res["entries"][0]
+        assert set(e["overwrite"]) == {"tdd", "grilling"}, "--adopt 后不一致实体覆盖"
+        assert e["keep"] == [{"name": "wizard", "reason": KEEP_NO_FLAG}], \
+            "--adopt 只影响不一致实体，已移除仍按删除纪律保留"
+        with open(os.path.join(hub, "grilling", "SKILL.md"), "r", encoding="utf-8") as f:
+            assert "手改" not in f.read(), "grilling 被覆盖为新树内容"
+
+
+def test_sync_hub_interactive_injected_deciders():
+    """交互模式注入决策序列：不一致逐个 覆盖/保留（decider 收到 diff 行）、
+    新增批量确认可拒、已移除逐个确认后删（交互同意即删，无需 --delete-removed）。"""
+    with tempfile.TemporaryDirectory() as tmp:
+        old_tree, new_tree = make_two_pin_trees(tmp)
+        hub = make_hub_from_tree(tmp, old_tree)
+        with open(os.path.join(hub, "grilling", "SKILL.md"), "a",
+                  encoding="utf-8") as f:
+            f.write("手改\n")
+        mismatch_asked, install_asked, remove_asked = [], [], []
+
+        def decide_mismatch(name, diff_lines):
+            mismatch_asked.append((name, diff_lines))
+            return "overwrite" if name == "grilling" else "keep"
+
+        def confirm_installs(names):
+            install_asked.append(list(names))
+            return False  # 用户拒绝装入
+
+        def decide_removals(names):
+            remove_asked.append(list(names))
+            return ["wizard"]
+
+        res = sync_hub_families(make_sync_plans(old_tree, new_tree), hub, tmp,
+                                yes=False, interactive=True,
+                                decide_mismatch=decide_mismatch,
+                                confirm_installs=confirm_installs,
+                                decide_removals=decide_removals,
+                                run_link=lambda root: (True, "ok"))
+        e = res["entries"][0]
+        assert [n for n, _ in mismatch_asked] == ["grilling"], "只有不一致实体被逐个问"
+        assert any("SKILL.md" in ln for ln in mismatch_asked[0][1]), \
+            "decider 拿到文件级差异摘要"
+        assert install_asked == [["pr", "teach"]], "新增批量确认一次"
+        # tdd 是干净落后：自动覆盖，不进交互
+        assert set(e["overwrite"]) == {"tdd", "grilling"}
+        assert {"name": "teach", "reason": KEEP_USER} in e["keep"]
+        assert {"name": "pr", "reason": KEEP_USER} in e["keep"]
+        assert set(e["remove"]) == {"wizard"}, "交互逐个同意后删除"
+        assert not os.path.exists(os.path.join(hub, "wizard"))
+        assert res["structure_changed"] is True
+
+
+def test_sync_hub_link_only_on_structure_change():
+    """链接层同步时机：纯覆盖（无新增/删除）不调用；仅当结构变化才调用。"""
+    with tempfile.TemporaryDirectory() as tmp:
+        base = os.path.join(tmp, "t")
+        old_tree = os.path.join(base, "old")
+        new_tree = os.path.join(base, "new")
+        for name, ver in (("tdd", "v1"), ("code-review", "v1")):
+            write_text(os.path.join(old_tree, "skills", "engineering", name,
+                                    "SKILL.md"),
+                       f"---\nname: {name}\n---\nbody {ver}\n")
+        write_text(os.path.join(new_tree, "skills", "engineering", "tdd",
+                                "SKILL.md"), "---\nname: tdd\n---\nbody v2\n")
+        write_text(os.path.join(new_tree, "skills", "engineering", "code-review",
+                                "SKILL.md"), "---\nname: code-review\n---\nbody v1\n")
+        hub = make_hub_from_tree(tmp, old_tree)
+        hub = os.path.join(tmp, "hub")
+        link_calls = []
+        res = sync_hub_families(make_sync_plans(old_tree, new_tree), hub, tmp,
+                                yes=True, run_link=lambda r: link_calls.append(r) or (True, "x"))
+        assert res["entries"][0]["overwrite"] == ["tdd"]
+        assert res["structure_changed"] is False
+        assert res["link"]["ran"] is False and link_calls == [], \
+            "纯覆盖不触发链接层同步"
+
+
+def test_sync_hub_link_failure_reported_not_fatal():
+    """链接层同步失败不回滚已写入、不抛异常：结果标 ok=False 供报告给手动补救命令。"""
+    with tempfile.TemporaryDirectory() as tmp:
+        old_tree, new_tree = make_two_pin_trees(tmp)
+        hub = make_hub_from_tree(tmp, old_tree)
+        res = sync_hub_families(make_sync_plans(old_tree, new_tree), hub, tmp,
+                                yes=True,
+                                run_link=lambda root: (False, "boom: link 失败"))
+        assert res["link"]["ran"] is True and res["link"]["ok"] is False
+        assert "boom" in res["link"]["output"]
+        assert os.path.isdir(os.path.join(hub, "teach")), "装入产物不回滚"
+
+
+def test_sync_hub_junction_aborts_single_member():
+    """枢纽实体是 junction -> 该项报错中止且目标不被写穿；其余成员照常落地。"""
+    with tempfile.TemporaryDirectory() as tmp:
+        old_tree, new_tree = make_two_pin_trees(tmp)
+        hub = make_hub_from_tree(tmp, old_tree)
+        target = os.path.join(tmp, "tdd-repo")
+        shutil.copytree(os.path.join(old_tree, "skills", "engineering", "tdd"),
+                        target)
+        shutil.rmtree(os.path.join(hub, "tdd"))
+        make_junction(os.path.join(hub, "tdd"), target)  # 内容==旧树 -> 干净落后分类
+        res = sync_hub_families(make_sync_plans(old_tree, new_tree), hub, tmp,
+                                yes=True, run_link=lambda root: (True, "ok"))
+        e = res["entries"][0]
+        assert [err["name"] for err in e["errors"]] == ["tdd"], "junction 项进错误清单"
+        assert "拒绝覆盖" in e["errors"][0]["error"] or "junction" in e["errors"][0]["error"]
+        assert "tdd" not in e["overwrite"]
+        with open(os.path.join(target, "SKILL.md"), "r", encoding="utf-8") as f:
+            assert "v2" not in f.read(), "junction 目标绝不被写穿"
+        assert os.path.isdir(os.path.join(hub, "teach")), "其余成员不受影响照常装入"
+
+
+def test_sync_hub_idempotent_second_run_zero_actions():
+    """同一状态重跑零动作：全 same、无结构变化、不再调链接层。"""
+    with tempfile.TemporaryDirectory() as tmp:
+        old_tree, new_tree = make_two_pin_trees(tmp)
+        hub = make_hub_from_tree(tmp, old_tree)
+        sync_hub_families(make_sync_plans(old_tree, new_tree), hub, tmp,
+                          yes=True, delete_removed=True,
+                          run_link=lambda root: (True, "ok"))
+        link_calls = []
+        res2 = sync_hub_families(make_sync_plans(old_tree, new_tree), hub, tmp,
+                                 yes=True, delete_removed=True,
+                                 run_link=lambda r: link_calls.append(r) or (True, "ok"))
+        e = res2["entries"][0]
+        assert e["overwrite"] == [] and e["install"] == [] and e["remove"] == []
+        assert e["keep"] == [] and e["errors"] == []
+        assert len(e["same"]) == 5, "全部成员已同步"
+        assert res2["structure_changed"] is False and res2["link"]["ran"] is False
+        assert link_calls == []
+
+
+def test_sync_hub_dry_run_plans_only():
+    """dry-run：分类与计划照出，但零写入、不调链接层。"""
+    with tempfile.TemporaryDirectory() as tmp:
+        old_tree, new_tree = make_two_pin_trees(tmp)
+        hub = make_hub_from_tree(tmp, old_tree)
+        before = sorted(os.listdir(hub))
+        with open(os.path.join(hub, "grilling", "SKILL.md"), "a",
+                  encoding="utf-8") as f:
+            f.write("手改\n")
+        res = sync_hub_families(make_sync_plans(old_tree, new_tree), hub, tmp,
+                                yes=True, delete_removed=True, dry_run=True,
+                                run_link=lambda root: (_ for _ in ()).throw(AssertionError("不该调用")))
+        e = res["entries"][0]
+        assert set(e["overwrite"]) == {"tdd"} and set(e["install"]) == {"teach", "pr"}
+        assert set(e["remove"]) == {"wizard"}
+        assert sorted(os.listdir(hub)) == before, "枢纽零写入"
+        assert os.path.isdir(os.path.join(hub, "wizard")), "dry-run 不删"
+        assert res["structure_changed"] is False and res["link"]["ran"] is False
+
+
+def test_sync_hub_baseline_plan_no_old_tree():
+    """建基线计划（old_tree=None）：不覆盖不删除，保留+装入照常。"""
+    with tempfile.TemporaryDirectory() as tmp:
+        _old, new_tree = make_two_pin_trees(tmp)
+        hub = make_hub_from_tree(tmp, new_tree)
+        with open(os.path.join(hub, "tdd", "SKILL.md"), "a",
+                  encoding="utf-8") as f:
+            f.write("手改\n")
+        shutil.rmtree(os.path.join(hub, "grilling"))
+        plans = [{"action": "baseline", "name": "beta-skills", "repo": "beta/two",
+                  "ref": "HEAD", "old_sha": None, "new_sha": BASE_SHA,
+                  "new_ref": "main", "date": NEW_DATE, "version": "0.9.0",
+                  "waived": [], "old_tree": None, "new_tree": new_tree}]
+        res = sync_hub_families(plans, hub, tmp, yes=True,
+                                run_link=lambda root: (True, "ok"))
+        e = res["entries"][0]
+        assert e["overwrite"] == [] and e["remove"] == [], "无旧基线，不覆盖不删"
+        assert set(e["install"]) == {"grilling"}
+        assert {"name": "tdd", "reason": KEEP_MISMATCH} in e["keep"]
+
+
+def test_prompt_mismatch_answer_sequences():
+    """真实交互函数按应答序列工作：d 看 diff 后重问、非法答重问、o/k 生效。"""
+    lines = ["内容不同: SKILL.md"]
+    p = prompt_mismatch("x", lines, input_fn=seq_input(["d", "o"]))
+    assert p == "overwrite", "d 先看 diff 再重问，o 覆盖"
+    assert prompt_mismatch("x", lines, input_fn=seq_input(["k"])) == "keep"
+    assert prompt_mismatch("x", lines, input_fn=seq_input(["bogus", "保留"])) == "keep", \
+        "非法答重问，中文答也认"
+
+    assert prompt_batch_install(["a", "b"], input_fn=seq_input(["y"])) is True
+    assert prompt_batch_install(["a"], input_fn=seq_input(["n"])) is False
+    assert prompt_removals(["a", "b"], input_fn=seq_input(["y", "n"])) == ["a"], \
+        "已移除逐个确认，只删同意的"
 
 
 def write_text(path, text):
@@ -1104,11 +1940,11 @@ def make_upstream_tree(tree_root):
     return expected
 
 
-def make_pin_tarball(tmp, top_name="skills-49dd158d"):
+def make_pin_tarball(tmp, top_name="skills-49dd158d", tar_name="pin.tar.gz"):
     """把上游树打成 codeload 形态的 tar.gz（单顶层目录），返回 (tar_path, tree_root)。"""
     tree_root = os.path.join(tmp, top_name)
     make_upstream_tree(tree_root)
-    tar_path = os.path.join(tmp, "pin.tar.gz")
+    tar_path = os.path.join(tmp, tar_name)
     with tarfile.open(tar_path, "w:gz") as tf:
         tf.add(tree_root, arcname=top_name)
     return tar_path, tree_root
@@ -1270,6 +2106,9 @@ TESTS = [
     test_plan_updates_gate_failure_isolated,
     test_plan_updates_skips_up_to_date,
     test_plan_updates_head_failure_isolated,
+    test_plan_updates_keep_trees_carries_old_and_new,
+    test_plan_updates_default_no_keep_cleans_up,
+    test_plan_updates_old_tarball_failure_isolated,
     test_normalize_tree_root_renames_to_plugin_name,
     test_plan_updates_gate_receives_normalized_tree,
     test_apply_updates_writes_both_files,
@@ -1282,6 +2121,30 @@ TESTS = [
     test_cmd_update_entry_filter,
     test_cmd_update_entry_unknown,
     test_build_update_report,
+    test_classify_family_sync_five_actions,
+    test_classify_family_sync_baseline_no_old_tree,
+    test_classify_family_sync_missing_member_in_hub_installs,
+    test_classify_family_sync_crlf_not_drift,
+    test_diff_tree_summary,
+    test_overwrite_entity_replaces_tree,
+    test_overwrite_entity_refuses_junction,
+    test_remove_path_safe_never_through_junction,
+    test_sync_hub_yes_mode_policy,
+    test_sync_hub_delete_removed_with_flag,
+    test_sync_hub_adopt_overrides_mismatch,
+    test_sync_hub_interactive_injected_deciders,
+    test_sync_hub_link_only_on_structure_change,
+    test_sync_hub_link_failure_reported_not_fatal,
+    test_sync_hub_junction_aborts_single_member,
+    test_sync_hub_idempotent_second_run_zero_actions,
+    test_sync_hub_dry_run_plans_only,
+    test_sync_hub_baseline_plan_no_old_tree,
+    test_prompt_mismatch_answer_sequences,
+    test_cmd_update_full_chain_hub_sync,
+    test_cmd_update_rerun_skip_zero_hub_actions,
+    test_cmd_update_sync_error_exit_code_one,
+    test_cmd_update_dry_run_hub_planned_not_executed,
+    test_build_hub_sync_report,
 ]
 
 

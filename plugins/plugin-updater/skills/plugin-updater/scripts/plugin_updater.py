@@ -20,37 +20,60 @@ check 三条线（票 01 pin 线 + 票 02 枢纽同步线 / 其他市场副本�
                 副本报已装版本/来源市场/上游 sha 并打印刷新命令（只打印不代跑）；
                 未装的 agent（含无安装记录的 MiniMax）报「未安装」不报错。
 
-update 仓库写半链（票 03）——对有新版的条目（或 --entry 指定条目）依序：
-    下载新 SHA tarball（与 check 枢纽线共用一次下载）-> plugin-validator
-    --standalone 校验门（解包树上跑，非 0 阻断 error 全链中止、零写入；
-    「缺 .minimax-plugin」对外部引用式条目特判 N/A——本地无源码、不分发给
-    MiniMax，见 2026-10-18 手动重 pin 先例）-> bump marketplace.json 该条目
-    pinnedSha/pinnedAt（note 仅同步内嵌旧 SHA/日期的文字）-> 同步
-    docs/plugin-compatibility.md「外部聚合插件」表格的 pin 列。
-    全部条目先计划后写入（全或无）：任一条目失败就不写任何文件。
-    无 pin 条目 update 时 pin 到当时 head 建基线（照走同一校验门，写齐
-    pinnedRef（git ls-remote --symref 取默认分支）/pinnedSha/pinnedAt）。
-    枢纽族实体同步与链接层同步是票 04，本链不触碰。
+update 六步链（票 03 仓库写半链 + 票 04 枢纽族实体同步）——对有新版的条目
+（或 --entry 指定条目）依序：
+    ① 下载新旧 SHA tarball（旧 pin 树在 bump 前落地——三方分类需要旧基线，
+       bump 完旧 SHA 就从 marketplace.json 消失了；新树与 check 枢纽线共用
+       一次下载逻辑）
+    ② plugin-validator --standalone 校验门（解包新树上跑，非 0 阻断 error
+       全链中止、零写入；「缺 .minimax-plugin」对外部引用式条目特判 N/A——
+       本地无源码、不分发给 MiniMax，见 2026-10-18 手动重 pin 先例）
+    ③ bump marketplace.json 该条目 pinnedSha/pinnedAt（note 仅同步内嵌旧
+       SHA/日期的文字）-> 同步 docs/plugin-compatibility.md「外部聚合插件」
+       表格的 pin 列。全部条目先计划后写入（全或无）：任一条目失败就不写
+       任何文件。无 pin 条目 update 时 pin 到当时 head 建基线（照走同一校验
+       门，写齐 pinnedRef（git ls-remote --symref 取默认分支）/
+       pinnedSha/pinnedAt）
+    ④ 枢纽族实体三方同步（枢纽实体 × 旧 pin 树 × 新 pin 树）：干净落后
+       （枢纽==旧 pin）直接覆盖不问（内容=批准过的旧基线）；与基线不一致
+       默认保留并标出，交互逐个问「覆盖/保留/看 diff」，--adopt 显式声明
+       枢纽无手改后按干净落后覆盖；上游新增/枢纽缺失装入（交互批量确认
+       一次，--yes 自动）；上游已移除逐个确认后连枢纽实体与链接层 junction
+       一起删（非交互必须 --delete-removed，否则保留并报告）。覆盖=删旧树
+       拷新树；目标是 junction 一律拒绝（绝不写穿链接）；删链接用 os.rmdir
+       只摘链接（绝不递归删穿目标）
+    ⑤ 链接层同步：有结构变化（装入/删除）时调 skill-distributor 的 link
+       子命令（sys.executable + --root 仓库根）；失败不回滚已写入，报告给
+       手动补救命令
+    ⑥ 结束报告：覆盖/保留/新增/删除清单 + 各 agent 插件副本刷新命令
+       （只打印不代跑）
+    已最新（skip）条目不进④（真机 pin==head 时 update 零动作）。
 
 选项:
     check: --root / --hub（同上）
     update: --entry <名> 限定单条目；--yes 非交互确认（缺则拒绝一切变更）；
-            --dry-run 只打印将做的变更不写文件；--root 同上
+            --dry-run 只打印将做的变更不写文件；--adopt 声明枢纽无手改；
+            --delete-removed 非交互删除上游已移除实体；--hub 枢纽目录；
+            --link 链接层目录；--root 同上
 
 退出码: 0=全部最新且枢纽同步（check）/ 更新成功或无需更新（update）
-       1=有更新/无基线/查询失败/枢纽有差异（check）/ 更新失败全链中止（update）
+       1=有更新/无基线/查询失败/枢纽有差异（check）/ 更新失败全链中止或
+         枢纽同步有错误项/链接层同步失败（update）
        2=用法/输入错误（含非交互缺 --yes）
        （副本线只报告不影响退出码——外部市场副本是常驻消费线，不是可消除的漂移）
 
 设计约束:
     外部访问收敛为可注入 effect 函数（fetch_remote_head / fetch_upstream_version /
-    fetch_tarball / fetch_remote_default_ref / run_validator），与纯决策逻辑
-    （parse_external_entries / parse_ls_remote_output / parse_upstream_plugin_json /
-    judge_entry / derive_family_members / judge_hub_members / collect_copy_line /
-    build_report / build_hub_report / build_copy_report / decide_exit_code /
-    judge_validator_output / parse_symref_output / apply_pin_bump /
-    render_pin_cell / sync_compat_table）分离；编排（run_check / run_hub_check /
-    plan_updates / apply_updates）只做组合。
+    fetch_tarball / fetch_remote_default_ref / run_validator / run_link_sync），
+    与纯决策逻辑（parse_external_entries / parse_ls_remote_output /
+    parse_upstream_plugin_json / judge_entry / derive_family_members /
+    judge_hub_members / collect_copy_line / build_report / build_hub_report /
+    build_copy_report / decide_exit_code / judge_validator_output /
+    parse_symref_output / apply_pin_bump / render_pin_cell / sync_compat_table /
+    classify_family_sync / diff_tree_summary / build_hub_sync_report）分离；
+    交互决策（prompt_mismatch / prompt_batch_install / prompt_removals）收
+    input_fn，编排（run_check / run_hub_check / plan_updates / apply_updates /
+    sync_hub_families / cmd_update）只做组合。
     update 的解包树在校验门前用 normalize_tree_root 把目录名规范成 plugin.json
     的 name（codeload 顶层是 <repo>-<sha>，validator 校验 name 与目录名一致；
     手动重 pin 先例的 git clone 目录名天然对齐，tarball 链需显式补齐）。
@@ -311,11 +334,11 @@ def build_report(results, market_root=None):
         if r["status"] == STATUS_UPTODATE:
             lines.append("    结论 : 已最新")
         elif r["status"] == STATUS_UPDATE:
-            lines.append(f"    结论 : 有更新——pin 落后于上游 head，"
-                         f"人工确认后重 pin（update 子命令后续票交付）")
+            lines.append("    结论 : 有更新——pin 落后于上游 head，"
+                         "人工确认后 update（先 --dry-run 预览）")
         else:
             lines.append("    结论 : 无基线——上游当前 head 见上，"
-                         "人工确认后可 pin 建基线（update 子命令后续票交付）")
+                         "人工确认后 update --entry <名> pin 建基线")
     lines.append("")
     lines.append("汇总: " + " / ".join(
         f"{counts[s]} {STATUS_LABEL[s]}" for s in
@@ -702,13 +725,20 @@ def run_hub_check(entries, hub_dir, get_tarball=None, work_root=None):
 
 def plan_updates(entries, fetch_head=None, fetch_version=None,
                  fetch_default_ref=None, get_tarball=None, validator=None,
-                 validator_script=None, work_root=None, today=None):
-    """update 阶段一（不写盘）：逐条目取 head -> 判动作 -> 下载新版 tarball ->
+                 validator_script=None, work_root=None, today=None,
+                 keep_trees=False):
+    """update 阶段一（不写盘）：逐条目取 head -> 判动作 -> 下载 tarball ->
     校验门，产出计划或失败。单条目失败（head/默认分支/tarball/校验门）不中断
     其余条目的计划；是否全链写入由调用方按「有无失败」决定。
 
+    bump 条目在下载新版前先下载解包旧 pin 树（票 04：三方分类需要旧基线，
+    bump 完旧 SHA 就从 marketplace.json 消失了，树必须先落地）。keep_trees=True
+    时计划携带 work/old_tree/new_tree 供下半链实体同步用（清理责任移交调用方，
+    cmd_update 收尾统一删）；缺省 False 保持票 03 语义：纯计划用完即清、
+    不带树路径。
+
     plan 形态: {action: bump|baseline|skip, name, repo, ref, old_sha, new_sha,
-    new_ref(仅建基线), date, version, waived}
+    new_ref(仅建基线), date, version, waived, work/old_tree/new_tree(仅 keep_trees)}
     failure 形态: {name, repo, stage, error, detail(gate 时为阻断 error 清单)}
     所有外部访问走注入接缝（默认接真实 effect 函数）。
     """
@@ -721,6 +751,8 @@ def plan_updates(entries, fetch_head=None, fetch_version=None,
             raise ValueError("plan_updates 需要 validator 或 validator_script")
         validator = lambda tree: run_validator(tree, validator_script)  # noqa: E731
     today = today or datetime.date.today().isoformat()
+    if work_root:
+        os.makedirs(work_root, exist_ok=True)
 
     plans, failures = [], []
     for e in entries:
@@ -751,8 +783,13 @@ def plan_updates(entries, fetch_head=None, fetch_version=None,
                 continue
         work = tempfile.mkdtemp(prefix="plugin-updater-update-", dir=work_root)
         try:
+            old_tree = None
+            if action == ACTION_BUMP:
+                # 旧 pin 树先落地（票 04）：bump 完旧基线就没了，树必须先解包
+                old_tar = get_tarball(e["repo"], e["pinned_sha"], work)
+                old_tree = extract_tarball(old_tar, os.path.join(work, "old"))
             tar_path = get_tarball(e["repo"], head, work)
-            tree = extract_tarball(tar_path, work)
+            tree = extract_tarball(tar_path, os.path.join(work, "new"))
             tree = normalize_tree_root(tree)
         except Exception as exc:
             failures.append({"name": e["name"], "repo": e["repo"],
@@ -785,12 +822,18 @@ def plan_updates(entries, fetch_head=None, fetch_version=None,
                              "detail": detail})
             shutil.rmtree(work, ignore_errors=True)
             continue
-        plans.append({"action": action, "name": e["name"], "repo": e["repo"],
-                      "ref": ref, "old_sha": e.get("pinned_sha"),
-                      "new_sha": head, "new_ref": new_ref, "date": today,
-                      "version": fetch_version(e["repo"], head),
-                      "waived": verdict["waived"]})
-        shutil.rmtree(work, ignore_errors=True)
+        plan = {"action": action, "name": e["name"], "repo": e["repo"],
+                "ref": ref, "old_sha": e.get("pinned_sha"),
+                "new_sha": head, "new_ref": new_ref, "date": today,
+                "version": fetch_version(e["repo"], head),
+                "waived": verdict["waived"]}
+        if keep_trees:
+            plan["work"] = work
+            plan["old_tree"] = old_tree
+            plan["new_tree"] = tree
+        plans.append(plan)
+        if not keep_trees:
+            shutil.rmtree(work, ignore_errors=True)
     return plans, failures
 
 
@@ -848,6 +891,337 @@ def apply_updates(root, plans, dry_run=False, marketplace_path=None,
             f.write(new_compat_text.encode("utf-8"))
         result["compat"]["written"] = True
     return result
+
+
+# ---------------------------------------------------------------- 枢纽实体同步（票 04）
+# 三方分类（枢纽实体 × 旧 pin 树 × 新 pin 树）的五种动作。
+# 旧 pin 树是「干净落后 vs 手改」的判定基线：枢纽==旧 pin 内容说明用户没手改，
+# 只是落后，直接覆盖不丢东西；枢纽!=旧 pin 说明可能有手改，默认保留。
+SYNC_SAME = "sync-same"            # 枢纽==新 pin：已同步，不动
+SYNC_OVERWRITE = "sync-overwrite"  # 枢纽==旧 pin 且 != 新 pin：干净落后，直接覆盖
+SYNC_KEEP = "sync-keep"            # 枢纽!=旧 pin：与基线不一致（可能手改），默认保留
+SYNC_INSTALL = "sync-install"      # 枢纽缺该成员（上游新增或一直缺）：装入
+SYNC_REMOVE = "sync-remove"        # 仅旧 pin 有而新 pin 没有，枢纽还在：上游已移除
+# 保留的原因（报告里标注，处置口径不同）
+KEEP_MISMATCH = "与基线不一致（可能手改，未给 --adopt）"
+KEEP_USER = "用户选择保留"
+KEEP_NO_FLAG = "上游已移除，但非交互缺 --delete-removed"
+
+# 链接层（Claude Code 专用 junction 层，删已移除成员时一并清）
+DEFAULT_LINK_DIR = os.path.join(os.path.expanduser("~"), ".claude", "skills")
+# 链接层同步真实实现调用的仓库内相对脚本（skill-distributor 的 link 子命令）
+LINK_SCRIPT_REL = os.path.join("plugins", "skill-distributor", "skills",
+                               "skill-distributor", "scripts",
+                               "skill_distributor.py")
+
+
+def classify_family_sync(tree_old, tree_new, hub_dir):
+    """三方分类（纯决策）：逐族成员给动作（常量见 SYNC_*）。
+
+    tree_new 是必有的比对目标（bump 后的新 pin 树 / 建基线时的首棵树）；
+    tree_old 为 None（建基线，无旧 pin）时不存在「干净落后/已移除」概念：
+    枢纽==新树 -> 不动；枢纽!=新树 -> 保守保留（无基线可证清白）；
+    枢纽缺 -> 装入。内容比对一律走 compare_tree（CRLF 归一，票 02），
+    仅行尾不同不构成漂移。返回 [{name, category, action}]。
+    """
+    family_new = derive_family_members(tree_new)
+    family_old = derive_family_members(tree_old) if tree_old else {}
+    rows = []
+    for name, cat in family_new.items():
+        hub_entity = os.path.join(hub_dir, name)
+        new_entity = os.path.join(tree_new, "skills", cat, name)
+        if not os.path.exists(hub_entity):
+            action = SYNC_INSTALL
+        elif compare_tree(hub_entity, new_entity):
+            action = SYNC_SAME
+        else:
+            old_cat = family_old.get(name)
+            old_entity = (os.path.join(tree_old, "skills", old_cat, name)
+                          if old_cat else None)
+            if old_entity and os.path.isdir(old_entity) \
+                    and compare_tree(hub_entity, old_entity):
+                action = SYNC_OVERWRITE
+            else:
+                action = SYNC_KEEP
+        rows.append({"name": name, "category": cat, "action": action})
+    for name, cat in family_old.items():
+        if name in family_new:
+            continue
+        if os.path.exists(os.path.join(hub_dir, name)):
+            rows.append({"name": name, "category": cat, "action": SYNC_REMOVE})
+        # 枢纽也没有 -> 无事可做，不进行
+    return rows
+
+
+def diff_tree_summary(dir_hub, dir_base):
+    """文件级差异摘要（「看 diff」的数据源）：仅枢纽有 / 仅基线有 / 内容不同。
+
+    行尾归一后比对（与 compare_tree 同一口径）；dir_hub 不存在视为全缺。
+    返回 {only_hub, only_base, changed}（相对路径排序列表）。
+    """
+    files_hub = _relative_files(dir_hub) if os.path.isdir(dir_hub) else {}
+    files_base = _relative_files(dir_base) if os.path.isdir(dir_base) else {}
+    only_hub, only_base, changed = [], [], []
+    for rel in sorted(set(files_hub) | set(files_base)):
+        if rel not in files_base:
+            only_hub.append(rel)
+        elif rel not in files_hub:
+            only_base.append(rel)
+        elif _read_normalized(files_hub[rel]) != _read_normalized(files_base[rel]):
+            changed.append(rel)
+    return {"only_hub": only_hub, "only_base": only_base, "changed": changed}
+
+
+def format_diff_summary(diff):
+    """把 diff_tree_summary 的结果排成人可读的行（交互「看 diff」与日志共用）。"""
+    lines = []
+    for rel in diff["changed"]:
+        lines.append(f"内容不同: {rel}")
+    for rel in diff["only_hub"]:
+        lines.append(f"仅枢纽有: {rel}")
+    for rel in diff["only_base"]:
+        lines.append(f"仅基线有: {rel}")
+    if not lines:
+        lines.append("（无文件级差异）")
+    return lines
+
+
+class HubSyncError(RuntimeError):
+    """枢纽实体同步的单项失败（如目标是 junction 拒绝覆盖）；不中断其余成员。"""
+
+
+def is_link_path(path):
+    """junction/symlink 判定（与 skill-distributor 的 is_link 同一口径）。
+
+    os.path.islink 只认 symlink；Python 3.12+ 的 os.path.isjunction 才认
+    junction——两条都查，防止把 junction 当实体写穿。
+    """
+    if os.path.islink(path):
+        return True
+    if hasattr(os.path, "isjunction"):
+        return os.path.isjunction(path)
+    return False
+
+
+def overwrite_entity(hub_entity, source_dir):
+    """覆盖枢纽实体 = 删旧目录树后拷入新树（无状态设计，不做自动备份）。
+
+    目标是 junction/symlink 时抛 HubSyncError 中止该项——枢纽里出现链接说明
+    它可能是自研 skill 的正本链接，整树覆盖会写穿链接改到仓库（绝对禁止）。
+    """
+    if is_link_path(hub_entity):
+        raise HubSyncError(
+            f"拒绝覆盖：{hub_entity} 是 junction/链接（绝不写穿链接）——"
+            f"若确要替换请先手工移除链接")
+    shutil.rmtree(hub_entity)
+    shutil.copytree(source_dir, hub_entity)
+
+
+def remove_path_safe(path):
+    """删路径（已移除成员的枢纽实体与链接层条目共用）。
+
+    junction/symlink 只删链接本身（os.rmdir），绝不递归删穿链接的目标；
+    实体目录树整删；散文件直删；不存在的路径静默跳过（幂等）。
+    """
+    if is_link_path(path):
+        os.rmdir(path)
+    elif os.path.isdir(path):
+        shutil.rmtree(path)
+    elif os.path.exists(path):
+        os.remove(path)
+
+
+def run_link_sync(root, timeout=300):
+    """链接层同步的真实实现：调 skill-distributor 的 link 子命令。
+
+    用 sys.executable，cwd 与 --root 都指仓库根（skill-distributor 惯例）。
+    返回 (是否成功, 合并输出文本)；失败不抛异常——调用方不回滚已写入，
+    报告里给手动补救命令。
+    """
+    script = os.path.join(root, LINK_SCRIPT_REL)
+    if not os.path.isfile(script):
+        return False, f"链接层同步脚本不存在: {script}"
+    try:
+        proc = subprocess.run(
+            [sys.executable, script, "link", "--root", root],
+            cwd=root, capture_output=True, timeout=timeout)
+    except (OSError, subprocess.SubprocessError) as exc:
+        return False, f"skill-distributor link 调用失败: {exc}"
+    out = (proc.stdout or b"").decode("utf-8", errors="replace")
+    err = (proc.stderr or b"").decode("utf-8", errors="replace")
+    return proc.returncode == 0, (out + err).strip()
+
+
+# ---------------------------------------------------------------- 交互确认（票 04）
+# 三个真实 prompt 都收 input_fn（默认 input），测试注入应答序列即可驱动。
+
+def prompt_mismatch(name, diff_lines, input_fn=None):
+    """不一致实体的逐个确认：覆盖 / 保留 / 看 diff（循环到给出有效答案）。"""
+    input_fn = input_fn or input
+    while True:
+        ans = input_fn(
+            f"  [{name}] 与旧 pin 基线不一致（可能手改），覆盖/保留/看 diff？"
+            f"[覆盖=o / 保留=k / diff=d] ").strip().lower()
+        if ans in ("o", "overwrite", "覆盖", "y", "yes"):
+            return "overwrite"
+        if ans in ("k", "keep", "保留", "n", "no"):
+            return "keep"
+        if ans in ("d", "diff", "看"):
+            for ln in diff_lines:
+                print(f"      {ln}")
+
+
+def prompt_batch_install(names, input_fn=None):
+    """上游新增成员的批量确认（一次问全部，不逐个烦人）。"""
+    input_fn = input_fn or input
+    print(f"  上游新增 {len(names)} 个族实体将装入枢纽: {', '.join(names)}")
+    ans = input_fn("  装入？[y/n] ").strip().lower()
+    return ans in ("y", "yes", "是")
+
+
+def prompt_removals(names, input_fn=None):
+    """上游已移除成员的逐个确认（删除不可逆，单个过一遍），返回同意删除的子集。"""
+    input_fn = input_fn or input
+    chosen = []
+    for n in names:
+        ans = input_fn(
+            f"  [{n}] 上游已移除，连枢纽实体与链接层一起删除？[y/n] ").strip().lower()
+        if ans in ("y", "yes", "是"):
+            chosen.append(n)
+    return chosen
+
+
+# ---------------------------------------------------------------- 枢纽同步编排（票 04）
+
+def sync_hub_families(plans, hub_dir, root, *, link_dir=None, yes=False,
+                      interactive=False, adopt=False, delete_removed=False,
+                      dry_run=False, decide_mismatch=None, confirm_installs=None,
+                      decide_removals=None, run_link=None):
+    """update 下半链执行编排：按三方分类落地枢纽实体（可 dry-run 只计划）。
+
+    策略（与删除前确认文化对齐）：
+    - 干净落后（枢纽==旧 pin）：直接覆盖，两种模式都不问（内容=批准过的旧基线，
+      覆盖不丢用户东西；三十多个成员逐个问违背升级本意）；
+    - 与基线不一致：默认保留并标出；--adopt 视同干净落后覆盖；交互下由
+      decide_mismatch 逐个决定（覆盖/保留/看 diff）；
+    - 上游新增：装入；--yes 自动，交互下 confirm_installs 批量确认一次；
+    - 上游已移除：交互下 decide_removals 逐个确认；非交互必须 --delete-removed
+      才删，否则保留并标注原因；
+    - 有实际结构变化（新增/删除）时调 run_link 同步链接层（失败不回滚，
+      结果里带回输出供报告给手动补救命令）。
+
+    决策函数可注入（测试接缝）；缺省按 yes/interactive 接真实 prompt 或保守默认。
+    返回 {entries: [{name, overwrite, install, remove, keep, same, errors}],
+          structure_changed, link: {ran, ok, output}}。
+    """
+    link_dir = link_dir or DEFAULT_LINK_DIR
+    if decide_mismatch is None:
+        if interactive and not yes:
+            decide_mismatch = lambda name, diff_lines: prompt_mismatch(name, diff_lines)  # noqa: E731
+        else:
+            decide_mismatch = lambda name, diff_lines: "keep"  # noqa: E731
+    if confirm_installs is None:
+        if interactive and not yes:
+            confirm_installs = lambda names: prompt_batch_install(names)  # noqa: E731
+        else:
+            confirm_installs = lambda names: True  # noqa: E731
+    if decide_removals is None:
+        if interactive and not yes:
+            decide_removals = lambda names: prompt_removals(names)  # noqa: E731
+        else:
+            decide_removals = lambda names: list(names) if (yes and delete_removed) else []  # noqa: E731
+    run_link = run_link or run_link_sync
+
+    entries, structure_changed = [], False
+    for p in plans:
+        tree_old, tree_new = p.get("old_tree"), p["new_tree"]
+        family_old = (derive_family_members(tree_old) if tree_old else {})
+        rows = classify_family_sync(tree_old, tree_new, hub_dir)
+        entry = {"name": p["name"], "overwrite": [], "install": [], "remove": [],
+                 "keep": [], "same": [], "errors": []}
+        entries.append(entry)
+
+        # 装入：整条目批量确认一次（dry-run 不问，按计划展示）
+        install_rows = [r for r in rows if r["action"] == SYNC_INSTALL]
+        do_install = (bool(install_rows) and dry_run) or (
+            bool(install_rows) and not dry_run
+            and confirm_installs([r["name"] for r in install_rows]))
+
+        # 删除：dry-run 按全部计划展示；实删走决策（交互逐个 / --delete-removed）
+        remove_rows = [r for r in rows if r["action"] == SYNC_REMOVE]
+        if dry_run:
+            to_remove = [r["name"] for r in remove_rows]
+        else:
+            to_remove = decide_removals(
+                [r["name"] for r in remove_rows]) if remove_rows else []
+        kept_remove_reason = (KEEP_USER if (interactive and not yes)
+                              else KEEP_NO_FLAG)
+
+        for r in rows:
+            name, cat = r["name"], r["category"]
+            hub_entity = os.path.join(hub_dir, name)
+            new_entity = os.path.join(tree_new, "skills", cat, name)
+            if r["action"] == SYNC_SAME:
+                entry["same"].append(name)
+                continue
+            if r["action"] == SYNC_INSTALL:
+                if not do_install:
+                    entry["keep"].append({"name": name, "reason": KEEP_USER})
+                    continue
+                try:
+                    if not dry_run:
+                        shutil.copytree(new_entity, hub_entity)
+                    entry["install"].append(name)
+                    structure_changed = structure_changed or not dry_run
+                except OSError as exc:
+                    entry["errors"].append({"name": name, "error": str(exc)})
+                continue
+            if r["action"] == SYNC_REMOVE:
+                if name not in to_remove:
+                    entry["keep"].append({"name": name,
+                                          "reason": kept_remove_reason})
+                    continue
+                try:
+                    if not dry_run:
+                        remove_path_safe(hub_entity)
+                        link_entity = os.path.join(link_dir, name)
+                        if os.path.lexists(link_entity):
+                            remove_path_safe(link_entity)
+                    entry["remove"].append(name)
+                    structure_changed = structure_changed or not dry_run
+                except OSError as exc:
+                    entry["errors"].append({"name": name, "error": str(exc)})
+                continue
+            # SYNC_OVERWRITE / SYNC_KEEP：干净落后直接覆盖（不问——内容等于
+            # 批准过的旧基线，覆盖不丢用户东西）；不一致默认保留，
+            # --adopt 视同干净落后，交互下由 decide_mismatch 逐个决定。
+            if r["action"] == SYNC_KEEP and not adopt:
+                old_cat = family_old.get(name)
+                old_entity = (os.path.join(tree_old, "skills", old_cat, name)
+                              if old_cat else None)
+                ref_entity = (old_entity if old_entity
+                              and os.path.isdir(old_entity) else new_entity)
+                diff_lines = format_diff_summary(
+                    diff_tree_summary(hub_entity, ref_entity))
+                if decide_mismatch(name, diff_lines) != "overwrite":
+                    entry["keep"].append({
+                        "name": name,
+                        "reason": KEEP_USER if (interactive and not yes)
+                        else KEEP_MISMATCH})
+                    continue
+            try:
+                if not dry_run:
+                    overwrite_entity(hub_entity, new_entity)
+                entry["overwrite"].append(name)
+            except (HubSyncError, OSError) as exc:
+                entry["errors"].append({"name": name, "error": str(exc)})
+
+    link_info = {"ran": False, "ok": None, "output": ""}
+    if structure_changed and not dry_run:
+        ok, output = run_link(root)
+        link_info = {"ran": True, "ok": ok, "output": output}
+    return {"entries": entries, "structure_changed": structure_changed,
+            "link": link_info}
 
 
 # ---------------------------------------------------------------- 副本线纯决策层
@@ -1018,6 +1392,46 @@ def build_hub_report(hub_results, hub_dir=None, skipped=None):
     return lines
 
 
+def build_hub_sync_report(sync_result, dry_run=False):
+    """update 枢纽同步段报告：覆盖/保留/新增/删除清单（保留带原因）、
+    错误项、链接层同步状态（失败附手动补救命令）。dry-run 标注动作未执行。"""
+    header = "== 枢纽族实体同步（枢纽 ~/.agents/skills 正本）"
+    if dry_run:
+        header += "——dry-run，以下为将做的动作，未执行"
+    lines = ["", header]
+    for e in sync_result["entries"]:
+        lines.append("")
+        lines.append(f"[{e['name']}]")
+        if e["overwrite"]:
+            lines.append(f"    覆盖 {len(e['overwrite'])} 个"
+                         f"（干净落后/--adopt/确认）: {', '.join(e['overwrite'])}")
+        if e["install"]:
+            lines.append(f"    装入 {len(e['install'])} 个"
+                         f"（上游新增/枢纽缺失）: {', '.join(e['install'])}")
+        if e["remove"]:
+            lines.append(f"    删除 {len(e['remove'])} 个"
+                         f"（上游已移除，连链接层）: {', '.join(e['remove'])}")
+        for k in e["keep"]:
+            lines.append(f"    保留: {k['name']}（{k['reason']}）")
+        if e["same"]:
+            lines.append(f"    已同步 {len(e['same'])} 个，无需动作")
+        for err in e["errors"]:
+            lines.append(f"    错误: [{err['name']}] {err['error']}")
+    link = sync_result["link"]
+    lines.append("")
+    if not link["ran"]:
+        lines.append("链接层: 结构无变化，未调用同步")
+    elif link["ok"]:
+        lines.append("链接层: skill-distributor link 已同步")
+    else:
+        lines.append("链接层: 同步失败——已写入内容不回滚，请手动补救:")
+        lines.append(f"  python {LINK_SCRIPT_REL} link")
+        if link["output"]:
+            for ln in link["output"].splitlines():
+                lines.append(f"    | {ln}")
+    return lines
+
+
 def build_copy_report(copy_rows):
     """副本线报告：外部市场副本报版本/来源/sha + 刷新命令；未安装/本市场来源注明。"""
     lines = ["", "== 其他市场插件副本（只报告，不代跑刷新命令）"]
@@ -1139,13 +1553,19 @@ def cmd_check(root=None, hub_dir=None):
 
 
 def cmd_update(root=None, entry=None, yes=False, dry_run=False, interactive=None,
+               adopt=False, delete_removed=False, hub_dir=None, link_dir=None,
                fetch_head=None, fetch_version=None, fetch_default_ref=None,
-               get_tarball=None, validator=None, today=None):
-    """update 入口：守卫 -> 计划（下载+校验门，零写入）-> 全或无写盘。
+               get_tarball=None, validator=None, run_link=None,
+               decide_mismatch=None, confirm_installs=None, decide_removals=None,
+               collect_copies=None, today=None):
+    """update 入口：守卫 -> 计划（新旧树下载+校验门，零写入）-> 全或无写盘 ->
+    枢纽族实体三方同步（票 04）-> 链接层同步 -> 三段报告收尾。
 
     非交互环境（stdin 非 tty）缺 --yes 时拒绝执行任何变更（--dry-run 不写文件
     所以豁免）——守卫在任何外部访问之前触发。任一条目失败（head/tarball/校验门）
-    则全链不写盘。外部访问接缝可注入（测试用）。
+    则全链不写盘。枢纽同步只在有 bump/建基线条目时进行；已最新（skip）条目
+    不碰枢纽（幂等重跑零动作）。退出码：失败全链中止或枢纽有错误项/链接层
+    失败 -> 1；其余 -> 0。外部访问与决策接缝可注入（测试用）。
     """
     base = repo_root(root)
     entries = parse_external_entries(load_marketplace(base))
@@ -1165,19 +1585,52 @@ def cmd_update(root=None, entry=None, yes=False, dry_run=False, interactive=None
     plans, failures = plan_updates(
         entries, fetch_head=fetch_head, fetch_version=fetch_version,
         fetch_default_ref=fetch_default_ref, get_tarball=get_tarball,
-        validator=validator, validator_script=validator_script, today=today)
+        validator=validator, validator_script=validator_script, today=today,
+        keep_trees=True)
     apply_result = None
+    sync_result = None
     exit_code = 0
-    if failures:
-        exit_code = 1  # 全链中止：apply_updates 根本不进，仓库文件零改动
-    else:
-        try:
-            apply_result = apply_updates(base, plans, dry_run=dry_run)
-        except (OSError, ValueError) as exc:
-            print(f"错误：写盘阶段失败（此前的写入已尽力而为，请检查仓库状态）: {exc}")
-            return 1
+    try:
+        if failures:
+            exit_code = 1  # 全链中止：apply_updates 根本不进，仓库文件零改动
+        else:
+            try:
+                apply_result = apply_updates(base, plans, dry_run=dry_run)
+            except (OSError, ValueError) as exc:
+                print(f"错误：写盘阶段失败（此前的写入已尽力而为，请检查仓库状态）: {exc}")
+                return 1
+            # 下半链（票 04）：只有带树的条目（bump/建基线）进枢纽同步
+            sync_plans = [p for p in plans if p.get("new_tree")]
+            if sync_plans:
+                sync_result = sync_hub_families(
+                    sync_plans, hub_dir or DEFAULT_HUB_DIR, base,
+                    link_dir=link_dir, yes=yes,
+                    interactive=bool(interactive) and not yes and not dry_run,
+                    adopt=adopt, delete_removed=delete_removed,
+                    dry_run=dry_run, decide_mismatch=decide_mismatch,
+                    confirm_installs=confirm_installs,
+                    decide_removals=decide_removals, run_link=run_link)
+                if any(e["errors"] for e in sync_result["entries"]):
+                    exit_code = 1
+                if sync_result["link"]["ran"] and sync_result["link"]["ok"] is False:
+                    exit_code = 1
+    finally:
+        # keep_trees 的临时工作目录由收尾统一清（失败/成功/dry-run 都不残留）
+        for p in plans:
+            if p.get("work"):
+                shutil.rmtree(p["work"], ignore_errors=True)
+    if collect_copies is None:
+        collect_copies = lambda names, root_: collect_copy_line(  # noqa: E731
+            names, root_, zcode_installed_path=ZCODE_INSTALLED_JSON,
+            zcode_known_path=ZCODE_KNOWN_JSON,
+            claude_installed_path=CLAUDE_INSTALLED_JSON,
+            claude_known_path=CLAUDE_KNOWN_JSON)
+    copy_rows = collect_copies([e["name"] for e in entries], base)
     print("\n".join(build_update_report(plans, failures, apply_result,
                                         dry_run=dry_run, market_root=base)))
+    if sync_result is not None:
+        print("\n".join(build_hub_sync_report(sync_result, dry_run=dry_run)))
+    print("\n".join(build_copy_report(copy_rows)))
     return exit_code
 
 
@@ -1191,9 +1644,10 @@ def main(argv=None):
     ck.add_argument("--root", help="market 仓库根（默认从脚本位置向上推导，"
                                    "或环境变量 MARKET_REPO）")
     ck.add_argument("--hub", help="枢纽 skills 目录（默认 ~/.agents/skills）")
-    up = sub.add_parser("update", help="有新版条目走完仓库写半链：下载新版 tarball -> "
+    up = sub.add_parser("update", help="有新版条目走完更新全链：下载新旧 tarball -> "
                                        "plugin-validator 校验门 -> bump pin -> "
-                                       "同步 compat 表格（枢纽实体同步是后续票）")
+                                       "同步 compat 表格 -> 枢纽族实体三方同步 -> "
+                                       "链接层 link -> 副本刷新命令收尾")
     up.add_argument("--root", help="market 仓库根（默认从脚本位置向上推导，"
                                    "或环境变量 MARKET_REPO）")
     up.add_argument("--entry", help="只处理指定条目（外部聚合条目名）")
@@ -1201,12 +1655,21 @@ def main(argv=None):
                     help="确认执行变更；非交互环境（非 tty）缺它拒绝一切变更")
     up.add_argument("--dry-run", action="store_true",
                     help="只打印将做的变更，不写任何文件（无需 --yes）")
+    up.add_argument("--adopt", action="store_true",
+                    help="声明枢纽无手改：与基线不一致的实体按干净落后处理直接覆盖")
+    up.add_argument("--delete-removed", action="store_true",
+                    help="非交互删除上游已移除的族实体（连链接层）；交互模式逐个确认即可")
+    up.add_argument("--hub", help="枢纽 skills 目录（默认 ~/.agents/skills）")
+    up.add_argument("--link", help="链接层 skills 目录（默认 ~/.claude/skills，"
+                                   "删已移除成员时一并清理）")
     args = ap.parse_args(argv)
     if args.cmd == "check":
         return cmd_check(args.root, hub_dir=args.hub)
     if args.cmd == "update":
         return cmd_update(args.root, entry=args.entry, yes=args.yes,
-                          dry_run=args.dry_run)
+                          dry_run=args.dry_run, adopt=args.adopt,
+                          delete_removed=args.delete_removed,
+                          hub_dir=args.hub, link_dir=args.link)
     return 2
 
 
