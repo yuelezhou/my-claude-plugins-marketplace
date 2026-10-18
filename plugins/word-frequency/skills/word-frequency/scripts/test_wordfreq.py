@@ -5,8 +5,8 @@ test_wordfreq.py — wordfreq.py 的回归自测。
 
 覆盖：专名判定（句中大写过滤、词典证据真词的小写推翻、词典零证据人名
 不被小写泛滥救回、句首不作证据、功能词排除）、单字母噪声过滤（S01E01
-标号拆出的 s/e）、基础档 CET4-6 边界（最高等级判据不回归）、--all 全量
-模式与 pn 标记、Token 的大小写/句首传播。
+标号拆出的 s/e）、基础档相交判据（隐藏集=中考/高考/CET4，CET6 边界档
+显示，双标词隐藏）、--all 全量模式与 pn 标记、Token 的大小写/句首传播。
 
 用 analyze_materials 的内存接缝：材料是内存文本，词典是几条的小数据，
 不碰真实 data/。
@@ -31,23 +31,26 @@ from wordfreq import (Lexicon, Material, analyze_materials, sentence_tokens)
 
 
 def make_lexicon():
-    """小词典：等级覆盖三档边界，coca 只放 abandon（2201，故意越过常识阈值）。
+    """小词典：等级覆盖相交判据的边界，coca 只放 grumble（2201，故意越过常识阈值）。
 
-    peter 按真实 ECDICT 的情况收录为动词（peter out 逐渐消失）：有词典证据的
-    真词，小写一票推翻专名判定就靠它验证。
+    - abandon {cet4, ky}：CET4 与考研双标，相交判据下隐藏（ADR 0002 的标志性词）
+    - premise {cet6}：最低只到 CET6 的边界档，照常显示
+    - grumble {tem4}：进阶档显示；peter 按真实 ECDICT 情况收录为动词，
+      有词典证据的真词，小写一票推翻专名判定就靠它验证
     """
     return Lexicon(
         levels={
             "classroom": {"zk"},
-            "influence": {"cet4", "cet6"},   # 最高档 cet6：新基础档，应滤
-            "abandon": {"cet4", "ky"},       # 最高档 ky：交集判据会误伤，必须保留
+            "influence": {"cet4", "cet6"},   # 含 cet4：相交判据下隐藏
+            "abandon": {"cet4", "ky"},       # 双标词：低端收录即视为已学，隐藏
             "grumble": {"tem4"},
+            "premise": {"cet6"},
         },
         dictionary={"abandon": ("ә'bændәn", "vt. 放弃", "3"),
                     "grumble": ("", "vi. 抱怨", ""),
                     "peter": ("'pi:tə", "vi. 逐渐消失", "")},
         lemma_map={"grumbling": "grumble"},
-        coca={"abandon": 2201},
+        coca={"grumble": 2201},
     )
 
 
@@ -68,17 +71,17 @@ def test_proper_noun_filtered():
         "Peter met Gloria in the park.\n"
         "Later Peter smiled.\n"
         "Gloria and I studied together.\n"
-        "Abandon the plan.\n")
+        "Grumble all you want.\n")
     ws = shown_words((meta, words))
     assert "peter" not in ws, "Peter 句中大写应被专名规则滤掉"
     assert "gloria" not in ws, "Gloria 句中大写应被专名规则滤掉"
     assert "later" not in ws, "只在句首出现且不在 COCA 表的大写词应判专名"
     assert meta["filtered_proper"] == 3, f"专名计数应为 3，实际 {meta['filtered_proper']}"
-    # 只在句首出现、但 COCA 表收录了的词（Abandon the plan 的 abandon）按普通词保留
-    assert "abandon" in ws, "COCA 表内的词不应因只在句首出现被判专名"
+    # 只在句首出现、但 COCA 表收录了的词（Grumble all you want 的 grumble）按普通词保留
+    assert "grumble" in ws, "COCA 表内的词不应因只在句首出现被判专名"
     # I 永远大写，但它是功能词，走功能词通道不算专名
     assert "i" not in ws, "功能词 I 应被功能词规则滤掉"
-    assert "met" in ws and "park" in ws and "studied" in ws and "plan" in ws
+    assert "met" in ws and "park" in ws and "studied" in ws and "want" in ws
 
 
 def test_lowercase_refutes_proper():
@@ -100,13 +103,13 @@ def test_proper_noun_flag_in_all_mode():
         "Peter met Gloria in the park.\n"
         "Later Peter smiled.\n"
         "Gloria and I studied together.\n"
-        "Abandon the plan.\n", show_all=True)
+        "Grumble all you want.\n", show_all=True)
     assert meta["show_all"] is True
     rows = {x["w"]: x for x in words}
-    assert len(rows) == 14, f"全量模式应显示全部 14 个原形，实际 {len(rows)}"
+    assert len(rows) == 16, f"全量模式应显示全部 16 个原形，实际 {len(rows)}"
     assert rows["peter"]["pn"] is True and rows["gloria"]["pn"] is True
     assert rows["later"]["pn"] is True
-    assert rows["abandon"]["pn"] is False, "COCA 表内的句首词不算专名"
+    assert rows["grumble"]["pn"] is False, "COCA 表内的句首词不算专名"
     assert rows["met"]["pn"] is False and rows["park"]["pn"] is False
 
 
@@ -142,21 +145,22 @@ def test_single_letter_noise_filtered():
 
 # ---------------------------------------------------------------- 基础档边界
 
-def test_cet6_now_basic():
-    """最高档 CET6 的词默认隐藏（新档位），COCA 阈值外也一样。"""
-    meta, words, _, _ = run("Their influence shaped the debate.\n")
-    assert "influence" not in shown_words((meta, words)), \
-        "最高档 cet6 应被基础词规则滤掉"
+def test_cet6_boundary_shown():
+    """CET6 不在隐藏集：最低只到 CET6 的词照常显示（可能学得不牢固）。"""
+    meta, words, _, _ = run("Their influence shaped the debate.\nThe premise was flawed.\n")
+    ws = shown_words((meta, words))
+    assert "influence" not in ws, "含 CET4 标签的 influence 应被相交判据隐藏"
+    assert "premise" in ws, "最低只到 CET6 的词应显示"
     assert meta["filtered_basic"] == 1, f"基础词计数应为 1，实际 {meta['filtered_basic']}"
 
 
-def test_highest_level_rule_holds():
-    """CET4+考研 的 abandon：最高档是考研，仍显示 —— 判据是最高档不是集合相交。"""
+def test_dual_tag_hidden():
+    """相交判据：CET4+考研 双标的 abandon 也隐藏——低端收录即视为已学（ADR 0002）。"""
     meta, words, _, _ = run("He will abandon the plan.\nThe dog kept grumbling.\n")
     ws = shown_words((meta, words))
-    assert "abandon" in ws, "最高档为 ky 的词不应因含 cet4 被误滤"
+    assert "abandon" not in ws, "含 CET4 标签的 abandon 应被相交判据隐藏"
+    assert meta["filtered_basic"] == 1, f"基础词计数应为 1，实际 {meta['filtered_basic']}"
     assert "grumble" in ws, "tem4 词应显示"
-    assert "influence" not in ws  # 未出现在本文本，哨兵：确认词典没串味
     assert "grumbling" not in ws, "grumbling 应归并进 grumble"
 
 
@@ -187,8 +191,8 @@ TESTS = [
     test_dictless_names_survive_lowercase_flood,
     test_single_letter_noise_filtered,
     test_proper_noun_flag_in_all_mode,
-    test_cet6_now_basic,
-    test_highest_level_rule_holds,
+    test_cet6_boundary_shown,
+    test_dual_tag_hidden,
     test_token_case_and_sent_start,
 ]
 

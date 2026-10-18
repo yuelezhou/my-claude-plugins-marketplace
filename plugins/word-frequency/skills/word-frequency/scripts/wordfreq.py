@@ -9,7 +9,7 @@ wordfreq.py — 词频统计（英语学习向）
 
 流程: 适配器(材料→材料块) → 剔噪 → 剥 markdown 语法 → 逐行二分出英材
       → 分句分词 → 词形归并(running→run) → 词频统计 → 词典短语匹配
-      → 等级标注(中考..GRE/专四/专八) + COCA 排名 → 默认隐藏已会词、基础词(中考/高考/CET4-6)、专名与单字母噪声
+      → 等级标注(中考..GRE/专四/专八) + COCA 排名 → 默认隐藏已会词、基础词(中考/高考/CET4)、专名与单字母噪声
 输出: HTML 交互报告 / Anki 导入 txt / CSV / Markdown 摘要
 """
 import argparse
@@ -35,13 +35,15 @@ LEVEL_NAMES = {
     "tem4": "专四", "tem8": "专八", "ky": "考研", "ielts": "雅思",
     "toefl": "托福", "gre": "GRE",
 }
-BASIC_LEVELS = {"zk", "gk", "cet4", "cet6"}  # 基础四档（中考/高考/CET4-6）：默认隐藏
+#: 隐藏集（基础三档 = 中考/高考/CET4）：判定用**集合相交**——词表出现在任一低
+#: 端词表就视为已学，哪怕它同时属于考研/雅思/GRE（低端收录本身就是"学过"的
+#: 证据，见 ADR 0002）。CET6 不在隐藏集：最低只到 CET6 的词照常显示——可能
+#: 学得不牢固，要露出来复习。
+BASIC_LEVELS = {"zk", "gk", "cet4"}
 #: COCA 常见度阈值。排名在这个区间内（数字越小越常见）视为常识词，默认隐藏。
 #: 0 < rank <= 阈值 才算常识词：rank 为 0 表示该词不在 COCA 表里，而表外的多半是
-#: 专名或生僻词，那些是真生词，不能误藏。设 0 关闭这条规则。
-#:
-#: 取 2000 而不是更宽：abandon 的排名是 2201、abstract 4045、absorb 3145，
-#: 阈值一旦越过 2201 就把 abandon 挡掉了，而它按定义是真难词。
+#: 专名或生僻词，那些是真生词，不能误藏。设 0 关闭这条规则。阈值 2000 已覆盖
+#: 日常交流的核心词；再往宽调就会吞进需要学的中级词。
 COCA_COMMON_RANK = 2000
 #: 单字母 lemma 一律按噪声过滤。来源是 PDF 提取的碎片：集数标号 S01E01 会被
 #: 分词正则拆成 s / e，双栏错排会把单词掰断。真单字母词只有 a / I，它们由
@@ -1111,12 +1113,13 @@ def top_level(levels):
 
 
 def is_basic_word(levels):
-    """是不是基础词（基础四档 = 中考/高考/CET4-6）：只看**最高**等级，不看等级集合相交。
+    """是不是基础词（隐藏集 = 中考/高考/CET4）：**集合相交**判据，与等级高低无关。
 
-    用相交判定会误伤大量同时属于基础档与进阶档的词（abandon / abstract /
-    absorb 都是 CET4 + GRE），它们是真难词。
+    低端词表收录过 = 大概率已经学过，所以 abandon / abstract 这类 CET4 与
+    考研/GRE 双标的词也隐藏（见 ADR 0002）。反过来，最低只到 CET6 的词显示
+    ——可能学得不牢固，要露出来复习。
     """
-    return top_level(levels) in BASIC_LEVELS
+    return bool(levels & BASIC_LEVELS)
 
 
 def is_proper_noun(lemma, st, function_words=FUNCTION_WORDS, valid_words=frozenset(),
@@ -1524,7 +1527,7 @@ def main():
     print(f"✔ {len(files)} 个文件, {meta['total_tokens']} 词次, "
           f"生词 {meta['shown']} 个, 词组命中 {meta['phrase_count']} 个 "
           f"({time.time()-t0:.1f}s)")
-    print(f"  过滤: 已会 {meta['filtered_known']} + 基础词(中考/高考/CET4-6) {meta['filtered_basic']}"
+    print(f"  过滤: 已会 {meta['filtered_known']} + 基础词(中考/高考/CET4) {meta['filtered_basic']}"
           f" + 专名 {meta['filtered_proper']}"
           f" + 单字母 {meta['filtered_single']}"
           f" + 常识词(COCA≤{args.coca_rank}) {meta['filtered_common']}"
